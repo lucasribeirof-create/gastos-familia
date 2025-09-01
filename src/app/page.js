@@ -4,7 +4,7 @@
     
     // --- Ícones para usar na interface ---
     const IconeLixeira = () => (
-      <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" fill="currentColor" viewBox="0 0 16 16" className="inline-block">
+      <svg xmlns="http://www.w.org/2000/svg" width="1em" height="1em" fill="currentColor" viewBox="0 0 16 16" className="inline-block">
         <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z"/>
         <path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z"/>
       </svg>
@@ -18,6 +18,7 @@
     
     export default function RachaContasApp() {
       // --- Estados (a "memória" do nosso app) ---
+      const [appPronto, setAppPronto] = useState(false); // Novo estado para saber se o app já pode usar o localStorage
       const [pessoas, setPessoas] = useState([]);
       const [nomePessoa, setNomePessoa] = useState('');
     
@@ -31,151 +32,64 @@
       const [gastoCategoria, setGastoCategoria] = useState('');
       const [gastoData, setGastoData] = useState(new Date().toISOString().split('T')[0]);
     
-      // --- EFEITO: Carregar dados do localStorage quando o app abre ---
+      // --- EFEITO: Carregar dados do localStorage quando o app abre (só no navegador) ---
       useEffect(() => {
+        // Este código agora só roda no navegador, nunca no servidor da Vercel.
         try {
           const pessoasSalvas = localStorage.getItem('racha-contas-pessoas');
           const categoriasSalvas = localStorage.getItem('racha-contas-categorias');
           const gastosSalvos = localStorage.getItem('racha-contas-gastos');
     
           if (pessoasSalvas) setPessoas(JSON.parse(pessoasSalvas));
-          else setPessoas(['Lucas', 'Katy', 'Clara']); // Valor inicial se não houver nada salvo
+          else setPessoas(['Lucas', 'Katy', 'Clara']);
     
           if (categoriasSalvas) setCategorias(JSON.parse(categoriasSalvas));
-          else setCategorias(['Mercado', 'Carro', 'Aluguel', 'Lazer']); // Valor inicial
+          else setCategorias(['Mercado', 'Carro', 'Aluguel', 'Lazer']);
     
           if (gastosSalvos) setGastos(JSON.parse(gastosSalvos));
-    
         } catch (error) {
-          console.error("Failed to parse from localStorage", error);
+          console.error("Falha ao carregar dados do localStorage", error);
         }
-      }, []); // O array vazio [] significa que este efeito roda apenas uma vez, quando o app carrega
+        setAppPronto(true); // Avisa que o carregamento inicial terminou
+      }, []);
     
       // --- EFEITOS: Salvar dados no localStorage sempre que mudarem ---
       useEffect(() => {
-        if (pessoas.length > 0) {
+        if (appPronto) {
             localStorage.setItem('racha-contas-pessoas', JSON.stringify(pessoas));
         }
-      }, [pessoas]);
+      }, [pessoas, appPronto]);
     
       useEffect(() => {
-        if (categorias.length > 0) {
+        if (appPronto) {
             localStorage.setItem('racha-contas-categorias', JSON.stringify(categorias));
         }
-      }, [categorias]);
+      }, [categorias, appPronto]);
     
       useEffect(() => {
-        localStorage.setItem('racha-contas-gastos', JSON.stringify(gastos));
-      }, [gastos]);
-    
-    
-      // --- Funções para manipular os estados ---
-      const adicionarPessoa = (e) => {
-        e.preventDefault();
-        if (nomePessoa.trim() && !pessoas.includes(nomePessoa.trim())) {
-          setPessoas([...pessoas, nomePessoa.trim()]);
-          setNomePessoa('');
+        if (appPronto) {
+            localStorage.setItem('racha-contas-gastos', JSON.stringify(gastos));
         }
-      };
+      }, [gastos, appPronto]);
+    
+    
+      // --- Funções para manipular os estados (sem mudanças aqui) ---
+      const adicionarPessoa = (e) => { e.preventDefault(); if (nomePessoa.trim() && !pessoas.includes(nomePessoa.trim())) { setPessoas([...pessoas, nomePessoa.trim()]); setNomePessoa(''); } };
       const removerPessoa = (nomeParaRemover) => setPessoas(pessoas.filter(p => p !== nomeParaRemover));
-      
-      const adicionarCategoria = (e) => {
-        e.preventDefault();
-        if (novaCategoria.trim() && !categorias.includes(novaCategoria.trim())) {
-          setCategorias([...categorias, novaCategoria.trim()]);
-          setNovaCategoria('');
-        }
-      };
-    
-      const removerCategoria = (catParaRemover) => {
-        setCategorias(categorias.filter(c => c !== catParaRemover));
-      };
-      
-      const adicionarGasto = (e) => {
-        e.preventDefault();
-        if (gastoDescricao && gastoValor > 0 && gastoQuemPagou && gastoCategoria && gastoData) {
-          const novoGasto = {
-            id: Date.now(),
-            descricao: gastoDescricao.trim(),
-            valor: parseFloat(gastoValor),
-            quemPagou: gastoQuemPagou,
-            categoria: gastoCategoria,
-            data: gastoData,
-          };
-          setGastos([...gastos, novoGasto].sort((a, b) => new Date(b.data) - new Date(a.data)));
-          setGastoDescricao('');
-          setGastoValor('');
-        }
-      };
-    
+      const adicionarCategoria = (e) => { e.preventDefault(); if (novaCategoria.trim() && !categorias.includes(novaCategoria.trim())) { setCategorias([...categorias, novaCategoria.trim()]); setNovaCategoria(''); } };
+      const removerCategoria = (catParaRemover) => setCategorias(categorias.filter(c => c !== catParaRemover));
+      const adicionarGasto = (e) => { e.preventDefault(); if (gastoDescricao && gastoValor > 0 && gastoQuemPagou && gastoCategoria && gastoData) { const novoGasto = { id: Date.now(), descricao: gastoDescricao.trim(), valor: parseFloat(gastoValor), quemPagou: gastoQuemPagou, categoria: gastoCategoria, data: gastoData, }; setGastos([...gastos, novoGasto].sort((a, b) => new Date(b.data) - new Date(a.data))); setGastoDescricao(''); setGastoValor(''); } };
       const removerGasto = (idParaRemover) => setGastos(gastos.filter(g => g.id !== idParaRemover));
+      const limparTudo = () => { setPessoas([]); setCategorias([]); setGastos([]); };
+      const formatarData = (dataString) => { const [ano, mes, dia] = dataString.split('-'); return `${dia}/${mes}/${ano}`; };
     
-      const limparTudo = () => {
-          // Adicionaremos uma confirmação aqui no futuro
-          setPessoas([]);
-          setCategorias([]);
-          setGastos([]);
-      };
+      // --- Cálculos (sem mudanças aqui) ---
+      const gastosPorCategoria = useMemo(() => { const grouped = gastos.reduce((acc, gasto) => { const categoria = gasto.categoria; if (!acc[categoria]) acc[categoria] = []; acc[categoria].push(gasto); return acc; }, {}); return Object.keys(grouped).map(categoria => ({ nome: categoria, gastos: grouped[categoria], total: grouped[categoria].reduce((soma, g) => soma + g.valor, 0), })).sort((a, b) => b.total - a.total); }, [gastos]);
+      const resultadoDivisao = useMemo(() => { const total = gastos.reduce((acc, g) => acc + g.valor, 0); if (pessoas.length === 0 || total === 0) { return { total: 0, porPessoa: 0, saldos: {}, transacoes: [] }; } const porPessoa = total / pessoas.length; const saldos = pessoas.reduce((acc, p) => { const pagou = gastos.filter(g => g.quemPagou === p).reduce((soma, g) => soma + g.valor, 0); acc[p] = pagou - porPessoa; return acc; }, {}); const devedores = Object.entries(saldos).filter(([, v]) => v < 0).sort((a, b) => a[1] - b[1]); const credores = Object.entries(saldos).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]); const transacoes = []; let i = 0, j = 0; while(i < devedores.length && j < credores.length) { const [devedorNome, dividaAbs] = [devedores[i][0], -devedores[i][1]]; const [credorNome, credito] = [credores[j][0], credores[j][1]]; const valor = Math.min(dividaAbs, credito); if (valor > 0.01) { transacoes.push({ de: devedorNome, para: credorNome, valor }); } devedores[i][1] += valor; credores[j][1] -= valor; if (Math.abs(devedores[i][1]) < 0.01) i++; if (Math.abs(credores[j][1]) < 0.01) j++; } return { total, porPessoa, saldos, transacoes }; }, [gastos, pessoas]);
     
-      const formatarData = (dataString) => {
-        const [ano, mes, dia] = dataString.split('-');
-        return `${dia}/${mes}/${ano}`;
+      if (!appPronto) {
+        return <div className="bg-gray-50 min-h-screen flex items-center justify-center"><p>Carregando...</p></div>;
       }
-    
-      const gastosPorCategoria = useMemo(() => {
-        const grouped = gastos.reduce((acc, gasto) => {
-          const categoria = gasto.categoria;
-          if (!acc[categoria]) acc[categoria] = [];
-          acc[categoria].push(gasto);
-          return acc;
-        }, {});
-    
-        return Object.keys(grouped)
-          .map(categoria => ({
-            nome: categoria,
-            gastos: grouped[categoria],
-            total: grouped[categoria].reduce((soma, g) => soma + g.valor, 0),
-          }))
-          .sort((a, b) => b.total - a.total);
-      }, [gastos]);
-    
-      const resultadoDivisao = useMemo(() => {
-        const total = gastos.reduce((acc, g) => acc + g.valor, 0);
-        if (pessoas.length === 0 || total === 0) {
-          return { total: 0, porPessoa: 0, saldos: {}, transacoes: [] };
-        }
-    
-        const porPessoa = total / pessoas.length;
-        
-        const saldos = pessoas.reduce((acc, p) => {
-          const pagou = gastos.filter(g => g.quemPagou === p).reduce((soma, g) => soma + g.valor, 0);
-          acc[p] = pagou - porPessoa;
-          return acc;
-        }, {});
-    
-        const devedores = Object.entries(saldos).filter(([, v]) => v < 0).sort((a, b) => a[1] - b[1]);
-        const credores = Object.entries(saldos).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
-        
-        const transacoes = [];
-        let i = 0, j = 0;
-        while(i < devedores.length && j < credores.length) {
-          const [devedorNome, dividaAbs] = [devedores[i][0], -devedores[i][1]];
-          const [credorNome, credito] = [credores[j][0], credores[j][1]];
-          const valor = Math.min(dividaAbs, credito);
-          
-          if (valor > 0.01) {
-              transacoes.push({ de: devedorNome, para: credorNome, valor });
-          }
-    
-          devedores[i][1] += valor;
-          credores[j][1] -= valor;
-    
-          if (Math.abs(devedores[i][1]) < 0.01) i++;
-          if (Math.abs(credores[j][1]) < 0.01) j++;
-        }
-    
-        return { total, porPessoa, saldos, transacoes };
-      }, [gastos, pessoas]);
     
       return (
         <div className="bg-gray-50 min-h-screen font-sans text-gray-800 p-4 sm:p-6 lg:p-8">
@@ -256,34 +170,7 @@
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div className="lg:col-span-2 bg-white p-5 rounded-xl shadow-sm border border-gray-200">
                   <h2 className="text-lg font-semibold mb-3">Despesas</h2>
-                  {gastos.length === 0 ? (
-                    <p className="text-gray-500 text-center py-4">Nenhuma despesa lançada ainda.</p>
-                  ) : (
-                    <div className="space-y-4">
-                      {gastosPorCategoria.map(({ nome, gastos: gastosDaCategoria, total }) => (
-                        <div key={nome}>
-                          <div className="flex justify-between items-baseline border-b-2 border-gray-200 pb-1 mb-2">
-                            <h3 className="font-bold text-md text-gray-700">{nome}</h3>
-                            <span className="text-sm font-semibold text-gray-600">Total: R$ {total.toFixed(2)}</span>
-                          </div>
-                          <ul className="space-y-3 pl-2">
-                            {gastosDaCategoria.map(g => (
-                              <li key={g.id} className="flex items-center justify-between">
-                                <div>
-                                  <p className="font-semibold">{g.descricao}</p>
-                                  <p className="text-sm text-gray-500">{g.quemPagou} &bull; {formatarData(g.data)}</p>
-                                </div>
-                                <div className="flex items-center gap-4">
-                                  <span className="font-bold text-md">R$ {g.valor.toFixed(2)}</span>
-                                  <button onClick={() => removerGasto(g.id)} className="text-red-500 hover:text-red-700 text-xs font-semibold">remover</button>
-                                </div>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  {gastos.length === 0 ? ( <p className="text-gray-500 text-center py-4">Nenhuma despesa lançada ainda.</p> ) : ( <div className="space-y-4"> {gastosPorCategoria.map(({ nome, gastos: gastosDaCategoria, total }) => ( <div key={nome}> <div className="flex justify-between items-baseline border-b-2 border-gray-200 pb-1 mb-2"> <h3 className="font-bold text-md text-gray-700">{nome}</h3> <span className="text-sm font-semibold text-gray-600">Total: R$ {total.toFixed(2)}</span> </div> <ul className="space-y-3 pl-2"> {gastosDaCategoria.map(g => ( <li key={g.id} className="flex items-center justify-between"> <div> <p className="font-semibold">{g.descricao}</p> <p className="text-sm text-gray-500">{g.quemPagou} &bull; {formatarData(g.data)}</p> </div> <div className="flex items-center gap-4"> <span className="font-bold text-md">R$ {g.valor.toFixed(2)}</span> <button onClick={() => removerGasto(g.id)} className="text-red-500 hover:text-red-700 text-xs font-semibold">remover</button> </div> </li> ))} </ul> </div> ))} </div> )}
                 </div>
                 <div className="lg:col-span-1 bg-white p-5 rounded-xl shadow-sm border border-gray-200 space-y-4">
                   <h2 className="text-lg font-semibold">Resumo</h2>
@@ -295,36 +182,12 @@
                   <div>
                     <h3 className="font-semibold mb-2">Quem pagou quanto</h3>
                     <ul className="space-y-1 text-sm">
-                      {pessoas.map(p => {
-                        const pago = gastos.filter(g => g.quemPagou === p).reduce((soma, g) => soma + g.valor, 0);
-                        const saldo = resultadoDivisao.saldos[p] || 0;
-                        return (
-                          <li key={p} className="flex justify-between">
-                            <span>{p}</span>
-                            <span className="font-mono">
-                              R$ {pago.toFixed(2)}
-                              <span className={`ml-2 font-semibold ${saldo >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                ({saldo >= 0 ? '+' : ''}R$ {saldo.toFixed(2)})
-                              </span>
-                            </span>
-                          </li>
-                        )
-                      })}
+                      {pessoas.map(p => { const pago = gastos.filter(g => g.quemPagou === p).reduce((soma, g) => soma + g.valor, 0); const saldo = resultadoDivisao.saldos[p] || 0; return ( <li key={p} className="flex justify-between"> <span>{p}</span> <span className="font-mono"> R$ {pago.toFixed(2)} <span className={`ml-2 font-semibold ${saldo >= 0 ? 'text-green-600' : 'text-red-600'}`}> ({saldo >= 0 ? '+' : ''}R$ {saldo.toFixed(2)}) </span> </span> </li> ) })}
                     </ul>
                   </div>
                   <div>
                     <h3 className="font-semibold mb-2">Acertos</h3>
-                    {resultadoDivisao.transacoes.length === 0 ? (
-                      <p className="text-sm text-gray-500 text-center">Nenhum acerto necessário.</p>
-                    ) : (
-                      <ul className="space-y-2">
-                        {resultadoDivisao.transacoes.map((t, i) => (
-                          <li key={i} className="bg-green-100 text-green-800 text-center text-sm font-semibold p-2 rounded-lg">
-                            {t.de} deve para {t.para} <span className="font-bold">R$ {t.valor.toFixed(2)}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
+                    {resultadoDivisao.transacoes.length === 0 ? ( <p className="text-sm text-gray-500 text-center">Nenhum acerto necessário.</p> ) : ( <ul className="space-y-2"> {resultadoDivisao.transacoes.map((t, i) => ( <li key={i} className="bg-green-100 text-green-800 text-center text-sm font-semibold p-2 rounded-lg"> {t.de} deve para {t.para} <span className="font-bold">R$ {t.valor.toFixed(2)}</span> </li> ))} </ul> )}
                   </div>
                 </div>
               </div>
@@ -338,14 +201,14 @@
     }
     ```
 
-2.  **Envie a Correção para o GitHub:**
-    * Vá para o seu terminal (na pasta do projeto) e rode os 3 comandos do nosso fluxo de trabalho:
+2.  **Envie para o GitHub:**
+    * No seu PowerShell, rode os 3 comandos:
 
     ```bash
     git add .
     ```
     ```bash
-    git commit -m "Corrige erro de aspas para build da Vercel"
+    git commit -m "Correção final para build da Vercel"
     ```
     ```bash
     git push
