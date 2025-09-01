@@ -66,9 +66,7 @@ function GastosApp({ user, onSignOut }) {
 
   /* ===================== Carregar documento ===================== */
   const setDocAndSave = useCallback((next) => {
-    const doc = {
-      people, categories, projects, expenses
-    }
+    const doc = { people, categories, projects, expenses }
     const merged = typeof next === "function" ? next(doc) : next
     queueSave(merged)
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -111,7 +109,7 @@ function GastosApp({ user, onSignOut }) {
       const data = await carregarFamilia(slugInput)
       const doc = data || { people: [], categories: [], projects: [], expenses: [] }
 
-      // migração mínima: se não tiver projetos, cria um mensal do mês atual
+      // migração mínima: se não houver projetos, cria um mensal do mês atual
       let nextProjects = Array.isArray(doc.projects) ? doc.projects : []
       if (!nextProjects.length) {
         nextProjects = [{
@@ -143,18 +141,10 @@ function GastosApp({ user, onSignOut }) {
     }
   }, [slugInput])
 
-  /* ===================== Autosave (debounce) ===================== */
-  const saveTimer2 = useRef(null)
-  const queueSave2 = useCallback((next) => {
-    if (!slug) return
-    if (saveTimer2.current) clearTimeout(saveTimer2.current)
-    saveTimer2.current = setTimeout(()=>_queueSave(next), 800)
-  }, [_queueSave, slug])
-
   /* ===================== Ações: Projeto ===================== */
   function closeCurrentProject() {
     if (!selectedProject) return
-    const ok = confirm(`Fechar o projeto "${selectedProject.name}"? O status ficará "fechado" e a data de término será marcada, mas você ainda poderá editar se quiser.`)
+    const ok = confirm(`Fechar o projeto "${selectedProject.name}"? O status ficará "fechado" e a data de término será marcada, mas você ainda poderá editar.`)
     if (!ok) return
     setDocAndSave(d => {
       d.projects = d.projects.map(p => p.id === selectedProject.id ? { ...p, status: "closed", end: p.end || new Date().toISOString().slice(0,10) } : p)
@@ -220,10 +210,7 @@ function GastosApp({ user, onSignOut }) {
     const name = String(n || "").trim()
     if (!name) return
     if (people.includes(name)) return
-    setDocAndSave(d => {
-      d.people = [...d.people, name]
-      return d
-    })
+    setDocAndSave(d => { d.people = [...d.people, name]; return d })
   }
   function removePerson(n) {
     if (!confirm(`Remover a pessoa "${n}"? As despesas dela serão apagadas.`)) return
@@ -238,10 +225,7 @@ function GastosApp({ user, onSignOut }) {
     const name = String(n || "").trim()
     if (!name) return
     if (categories.includes(name)) return
-    setDocAndSave(d => {
-      d.categories = [...d.categories, name]
-      return d
-    })
+    setDocAndSave(d => { d.categories = [...d.categories, name]; return d })
   }
   function removeCategory(n) {
     if (!selectedProject) {
@@ -288,17 +272,11 @@ function GastosApp({ user, onSignOut }) {
       date,
       projectId: selectedProjectId,
     }
-    setDocAndSave(d => {
-      d.expenses = [...d.expenses, e]
-      return d
-    })
+    setDocAndSave(d => { d.expenses = [...d.expenses, e]; return d })
     setWho(""); setCategory(""); setAmount(""); setDesc("")
   }
   function removeExpense(id) {
-    setDocAndSave(d => {
-      d.expenses = d.expenses.filter(e => e.id !== id)
-      return d
-    })
+    setDocAndSave(d => { d.expenses = d.expenses.filter(e => e.id !== id); return d })
   }
 
   /* ===================== Derivados por Projeto + Mês ===================== */
@@ -355,22 +333,18 @@ function GastosApp({ user, onSignOut }) {
     return map
   }, [filteredExpenses])
 
-  // Acertos (quem deve para quem) — simples
+  // Acertos (quem deve para quem)
   const settlements = useMemo(() => {
-    // calcula saldo por pessoa: quanto pagou - perHead
     const saldo = {}
     for (const p of people) saldo[p] = (paidBy[p] || 0) - perHead
-
-    const devedores = []
-    const credores = []
+    const devedores = [], credores = []
     for (const p of people) {
       const v = Number(saldo[p] || 0)
-      if (v < -0.009) devedores.push({ p, v: -v }) // deve
-      else if (v > 0.009) credores.push({ p, v })  // tem a receber
+      if (v < -0.009) devedores.push({ p, v: -v })
+      else if (v > 0.009) credores.push({ p, v })
     }
     devedores.sort((a,b)=> b.v - a.v)
     credores.sort((a,b)=> b.v - a.v)
-
     const moves = []
     let i=0, j=0
     while (i < devedores.length && j < credores.length) {
@@ -405,104 +379,107 @@ function GastosApp({ user, onSignOut }) {
       </header>
 
       <div className="max-w-6xl mx-auto px-4 py-6">
-        {/* Slug */}
-        <section className="bg-white rounded-2xl shadow p-4 mb-4">
-          <h2 className="font-semibold mb-3">1) Família</h2>
-          <div className="flex flex-wrap items-end gap-2">
-            <div>
-              <label className="block text-xs mb-1">Código da família (slug)</label>
-              <input value={slugInput} onChange={(e)=>setSlugInput(e.target.value)} className="px-3 py-2 rounded-xl border" placeholder="ex.: familia-lucas" />
-            </div>
-            <button onClick={loadFromCloud} className="px-3 py-2 rounded-xl bg-slate-900 text-white">Usar</button>
-            {loading && <span className="text-sm text-slate-500">Carregando…</span>}
-            {!!error && <span className="text-sm text-red-600">Erro: {error}</span>}
-          </div>
-        </section>
-
-        {/* Projeto */}
-        <section className="bg-white rounded-2xl shadow p-4 mb-4">
-          <h2 className="font-semibold mb-3">2) Projeto</h2>
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center gap-2">
-              <select
-                className="px-3 py-2 rounded-xl border min-w-[220px]"
-                value={selectedProjectId}
-                onChange={(e)=>{
-                  setSelectedProjectId(e.target.value)
-                  localStorage.setItem(`project:${slug}`, e.target.value)
-                }}
-              >
-                {projects.map(p => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} {p.status==="closed" ? "(fechado)" : ""}
-                  </option>
-                ))}
-              </select>
-
+        {/* Projeto (esquerda) + Família (direita) na MESMA LINHA */}
+        <section className="grid lg:grid-cols-2 gap-4 mb-4">
+          {/* Projeto — esquerda */}
+          <div className="bg-white rounded-2xl shadow p-4">
+            <h2 className="font-semibold mb-3">Projeto</h2>
+            <div className="flex flex-col gap-3">
               <div className="flex items-center gap-2">
-                <button
-                  onClick={()=>setShowNewProject(v=>!v)}
-                  className="px-3 py-2 rounded-xl bg-blue-600 text-white"
+                <select
+                  className="px-3 py-2 rounded-xl border min-w-[220px]"
+                  value={selectedProjectId}
+                  onChange={(e)=>{
+                    setSelectedProjectId(e.target.value)
+                    if (slug) localStorage.setItem(`project:${slug}`, e.target.value)
+                  }}
                 >
-                  Novo projeto
-                </button>
-                <button
-                  onClick={closeCurrentProject}
-                  disabled={!selectedProject || isClosed}
-                  className={`px-3 py-2 rounded-xl border ${(!selectedProject || isClosed) ? "text-gray-400 border-gray-200" : ""}`}
-                  title={isClosed ? "Já está fechado" : "Fechar projeto atual"}
-                >
-                  Fechar projeto
-                </button>
-                <button
-                  onClick={reopenCurrentProject}
-                  disabled={!selectedProject || !isClosed}
-                  className={`px-3 py-2 rounded-xl border ${(!selectedProject || !isClosed) ? "text-gray-400 border-gray-200" : ""}`}
-                  title={!isClosed ? "Projeto já está aberto" : "Reabrir projeto"}
-                >
-                  Reabrir
-                </button>
-                <button
-                  onClick={deleteCurrentProject}
-                  disabled={!selectedProject}
-                  className={`px-3 py-2 rounded-xl border ${!selectedProject ? "text-gray-400 border-gray-200" : "text-red-700 border-red-200 hover:bg-red-50"}`}
-                  title="Excluir projeto e todas as despesas dele"
-                >
-                  Excluir
-                </button>
-              </div>
-            </div>
+                  {projects.map(p => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} {p.status==="closed" ? "(fechado)" : ""}
+                    </option>
+                  ))}
+                </select>
 
-            {showNewProject && (
-              <div className="border rounded-xl p-3 bg-slate-50">
-                <div className="grid md:grid-cols-5 gap-3">
-                  <div className="md:col-span-1">
-                    <label className="block text-xs mb-1">Tipo</label>
-                    <select value={newProjectType} onChange={(e)=>setNewProjectType(e.target.value)} className="w-full px-3 py-2 rounded-xl border">
-                      <option value="monthly">Mensal</option>
-                      <option value="trip">Viagem</option>
-                      <option value="custom">Personalizado</option>
-                    </select>
-                  </div>
-                  <div className="md:col-span-2">
-                    <label className="block text-xs mb-1">Nome</label>
-                    <input value={newProjectName} onChange={(e)=>setNewProjectName(e.target.value)} placeholder="Ex.: 2025-09 ou Viagem Nordeste" className="w-full px-3 py-2 rounded-xl border" />
-                  </div>
-                  <div className="md:col-span-1">
-                    <label className="block text-xs mb-1">Início</label>
-                    <input type="date" value={newProjectStart} onChange={(e)=>setNewProjectStart(e.target.value)} className="w-full px-3 py-2 rounded-xl border" />
-                  </div>
-                  <div className="md:col-span-1">
-                    <label className="block text-xs mb-1">Fim (opcional)</label>
-                    <input type="date" value={newProjectEnd} onChange={(e)=>setNewProjectEnd(e.target.value)} className="w-full px-3 py-2 rounded-xl border" />
-                  </div>
-                  <div className="md:col-span-5 flex justify-end gap-2">
-                    <button onClick={()=>setShowNewProject(false)} className="px-3 py-2 rounded-xl border">Cancelar</button>
-                    <button onClick={createProject} className="px-3 py-2 rounded-xl bg-blue-600 text-white">Criar</button>
-                  </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={()=>setShowNewProject(v=>!v)}
+                    className="px-3 py-2 rounded-xl bg-blue-600 text-white"
+                  >
+                    Novo
+                  </button>
+                  <button
+                    onClick={closeCurrentProject}
+                    disabled={!selectedProject || isClosed}
+                    className={`px-3 py-2 rounded-xl border ${(!selectedProject || isClosed) ? "text-gray-400 border-gray-200" : ""}`}
+                    title={isClosed ? "Já está fechado" : "Fechar projeto atual"}
+                  >
+                    Fechar
+                  </button>
+                  <button
+                    onClick={reopenCurrentProject}
+                    disabled={!selectedProject || !isClosed}
+                    className={`px-3 py-2 rounded-xl border ${(!selectedProject || !isClosed) ? "text-gray-400 border-gray-200" : ""}`}
+                    title={!isClosed ? "Projeto já está aberto" : "Reabrir projeto"}
+                  >
+                    Reabrir
+                  </button>
+                  <button
+                    onClick={deleteCurrentProject}
+                    disabled={!selectedProject}
+                    className={`px-3 py-2 rounded-xl border ${!selectedProject ? "text-gray-400 border-gray-200" : "text-red-700 border-red-200 hover:bg-red-50"}`}
+                    title="Excluir projeto e todas as despesas dele"
+                  >
+                    Excluir
+                  </button>
                 </div>
               </div>
-            )}
+
+              {showNewProject && (
+                <div className="border rounded-xl p-3 bg-slate-50">
+                  <div className="grid md:grid-cols-5 gap-3">
+                    <div className="md:col-span-1">
+                      <label className="block text-xs mb-1">Tipo</label>
+                      <select value={newProjectType} onChange={(e)=>setNewProjectType(e.target.value)} className="w-full px-3 py-2 rounded-xl border">
+                        <option value="monthly">Mensal</option>
+                        <option value="trip">Viagem</option>
+                        <option value="custom">Personalizado</option>
+                      </select>
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="block text-xs mb-1">Nome</label>
+                      <input value={newProjectName} onChange={(e)=>setNewProjectName(e.target.value)} placeholder="Ex.: 2025-09 ou Viagem Nordeste" className="w-full px-3 py-2 rounded-xl border" />
+                    </div>
+                    <div className="md:col-span-1">
+                      <label className="block text-xs mb-1">Início</label>
+                      <input type="date" value={newProjectStart} onChange={(e)=>setNewProjectStart(e.target.value)} className="w-full px-3 py-2 rounded-xl border" />
+                    </div>
+                    <div className="md:col-span-1">
+                      <label className="block text-xs mb-1">Fim (opcional)</label>
+                      <input type="date" value={newProjectEnd} onChange={(e)=>setNewProjectEnd(e.target.value)} className="w-full px-3 py-2 rounded-xl border" />
+                    </div>
+                    <div className="md:col-span-5 flex justify-end gap-2">
+                      <button onClick={()=>setShowNewProject(false)} className="px-3 py-2 rounded-xl border">Cancelar</button>
+                      <button onClick={createProject} className="px-3 py-2 rounded-xl bg-blue-600 text-white">Criar</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Família — direita */}
+          <div className="bg-white rounded-2xl shadow p-4">
+            <h2 className="font-semibold mb-3">Família</h2>
+            <div className="flex flex-wrap items-end gap-2">
+              <div>
+                <label className="block text-xs mb-1">Código (slug)</label>
+                <input value={slugInput} onChange={(e)=>setSlugInput(e.target.value)} className="px-3 py-2 rounded-xl border" placeholder="ex.: familia-lucas" />
+              </div>
+              <button onClick={loadFromCloud} className="px-3 py-2 rounded-xl bg-slate-900 text-white">Usar</button>
+              {loading && <span className="text-sm text-slate-500">Carregando…</span>}
+              {!!error && <span className="text-sm text-red-600">Erro: {error}</span>}
+            </div>
           </div>
         </section>
 
@@ -545,7 +522,7 @@ function GastosApp({ user, onSignOut }) {
 
         {/* Nova despesa */}
         <section className="bg-white rounded-2xl shadow p-4 mt-4">
-          <h2 className="font-semibold mb-3">3) Adicionar despesa {selectedProject ? `em ${selectedProject.name}` : ""}</h2>
+          <h2 className="font-semibold mb-3">Adicionar despesa {selectedProject ? `em ${selectedProject.name}` : ""}</h2>
           <div className="grid md:grid-cols-6 gap-3 items-end">
             <div className="md:col-span-1">
               <label className="block text-xs mb-1">Quem pagou</label>
@@ -582,13 +559,17 @@ function GastosApp({ user, onSignOut }) {
         </section>
 
         {/* Lista (agrupada por categoria) + Resumos */}
-        <section className="grid lg:grid-cols-3 gap-4">
+        <section className="grid lg:grid-cols-3 gap-4 mt-4">
           {/* Esquerda: despesas agrupadas por categoria (mês + filtro) */}
           <div className="lg:col-span-2 bg-white rounded-2xl shadow p-4">
-            <h2 className="font-semibold mb-3">
-              Despesas de {monthLabel(selectedMonth)} {selectedProject ? `— ${selectedProject.name}` : ""}{" "}
-              {filterCat!=="Todos" && <span className="text-slate-500">({filterCat})</span>}
-            </h2>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="font-semibold">
+                Despesas de {monthLabel(selectedMonth)} {selectedProject ? `— ${selectedProject.name}` : ""}{" "}
+                {filterCat!=="Todos" && <span className="text-slate-500">({filterCat})</span>}
+              </h2>
+              {/* Pequeno total já existia, mantemos aqui também */}
+              <div className="text-sm text-slate-500">Total: {currency(total)}</div>
+            </div>
 
             {Object.keys(groupedByCategory).length === 0 ? (
               <p className="text-sm text-slate-500">Sem despesas neste mês (ou no filtro aplicado).</p>
@@ -624,8 +605,14 @@ function GastosApp({ user, onSignOut }) {
             )}
           </div>
 
-          {/* Direita: Resumos do mês */}
+          {/* Direita: Resumos do mês (inclui TOTAL GERAL DO MÊS) */}
           <div className="bg-white rounded-2xl shadow p-4 space-y-6">
+            {/* NOVO: Total geral do mês em destaque */}
+            <div className="rounded-xl border p-3 bg-slate-50">
+              <h3 className="font-semibold mb-1">Total do mês</h3>
+              <div className="text-2xl font-bold">{currency(total)}</div>
+            </div>
+
             <div>
               <h3 className="font-semibold mb-2">Quem pagou quanto (rateio)</h3>
               {people.length === 0 ? (
@@ -683,7 +670,7 @@ function GastosApp({ user, onSignOut }) {
         </section>
 
         <footer className="text-center text-xs text-slate-500 pt-6">
-          Dica: use o mesmo <b>código da família</b> em aparelhos diferentes e organize por <b>Projetos</b> (mês, viagem, etc).
+          Use o mesmo <b>código da família</b> em aparelhos diferentes e organize por <b>Projetos</b> (mês, viagem, etc).
         </footer>
       </div>
     </div>
