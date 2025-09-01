@@ -1,516 +1,703 @@
+// src/app/dashboard/page.js
 "use client"
-
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useSession, signOut } from "next-auth/react"
 import { useRouter } from "next/navigation"
 import { carregarFamilia, salvarFamilia } from "../actions"
 
 /* ===================== Helpers ===================== */
-const currency = (v) => {
-  if (typeof v !== "number" || Number.isNaN(v)) return "R$ 0,00"
-  try { return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) }
-  catch { return `R$ ${v.toFixed(2)}` }
-}
+const currency = (v) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
 const fmtHora = (iso) => { try { return new Date(iso).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"}) } catch { return "" } }
-const todayYYYYMMDD = () => new Date().toISOString().slice(0,10)
 const monthKey = (dateStr) => (dateStr ? String(dateStr).slice(0,7) : "")
 const monthLabel = (yyyyMM) => (/^\d{4}-\d{2}$/.test(yyyyMM) ? `${yyyyMM.slice(5,7)}/${yyyyMM.slice(0,4)}` : yyyyMM || "")
-const uid = () => Math.random().toString(36).slice(2,10) + Math.random().toString(36).slice(2,10)
+const todayYYYYMM = () => new Date().toISOString().slice(0,7)
+const firstDayOfMonth = (yyyyMM) => `${yyyyMM}-01`
 
-/** Parser robusto para BRL: aceita "1.234,56", "1234,56", "123456" etc. */
-function parseBRL(input) {
-  if (typeof input !== "string") input = String(input ?? "")
-  const digits = input.replace(/[^\d]/g, "")
-  if (!digits) return 0
-  const int = digits.slice(0, -2) || "0"
-  const cents = digits.slice(-2).padStart(2, "0")
-  return Number(int + "." + cents)
-}
-
-/* ===================== Tipos & defaults ===================== */
-const defaultDoc = {
-  people: [],
-  categories: [],
-  projects: [],
-  expenses: [],
-  createdAt: null,
-  updatedAt: null,
-}
-
-/* ===================== Página ===================== */
-export default function DashboardPage() {
+/* ===================== Page (proteção por login) ===================== */
+export default function Page() {
   const { data: session, status } = useSession()
   const router = useRouter()
-
-  const [slug, setSlug] = useState("")
-  const [doc, setDoc] = useState(defaultDoc)
-  const [loading, setLoading] = useState(false)
-  const [loadError, setLoadError] = useState("")
-  const [saveState, setSaveState] = useState({ status: "idle", at: null, error: "" }) // idle|saving|error|ok
-  const [selectedProjectId, setSelectedProjectId] = useState("")
-  const [showNewProject, setShowNewProject] = useState(false)
-
-  // Inputs de nova despesa
-  const [who, setWho] = useState("")
-  const [category, setCategory] = useState("")
-  const [amount, setAmount] = useState("")
-  const [desc, setDesc] = useState("")
-  const [date, setDate] = useState(todayYYYYMMDD())
-
-  // debounce save
-  const saveTimer = useRef(null)
-  const lastSavedDocRef = useRef(null)
-
-  /* ========= Redireciona se não logado ========= */
   useEffect(() => {
     if (status === "unauthenticated") router.replace("/")
   }, [status, router])
+  if (status === "loading") return <div className="p-6">Carregando…</div>
+  if (!session) return <div className="p-6">Faça login para continuar.</div>
+  return <GastosApp user={session.user} onSignOut={signOut} />
+}
 
-  /* ========= Bootstrap slug ========= */
-  useEffect(() => {
-    try {
-      const s = localStorage.getItem("family:slug") || ""
-      if (s) setSlug(s)
-    } catch {}
-  }, [])
+/* ===================== App ===================== */
+function GastosApp({ user, onSignOut }) {
+  // ----- Família (slug) -----
+  const [slugInput, setSlugInput] = useState("")
+  const [slug, setSlug] = useState("")
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState("")
+  const [lastSavedAt, setLastSavedAt] = useState(null)
 
-  /* ========= Carregar doc ========= */
-  const loadDoc = useCallback(async (s) => {
-    if (!s) return
-    setLoading(true)
-    setLoadError("")
-    try {
-      const data = await carregarFamilia(s)
-      const doc = data || { ...defaultDoc, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+  // ----- Documento (nuvem) -----
+  const [people, setPeople] = useState([])
+  const [categories, setCategories] = useState(["Mercado", "Carro", "Aluguel", "Lazer"])
+  const [projects, setProjects] = useState([]) // {id,name,type,start,end,status}
+  const [expenses, setExpenses] = useState([]) // { ..., projectId }
 
-      // se não há projetos, cria um mensal do mês atual
-      if (!doc.projects?.length) {
-        const yyyyMM = monthKey(todayYYYYMMDD())
-        const p = {
-          id: "proj-" + uid(),
-          name: yyyyMM,
-          type: "monthly",
-          start: `${yyyyMM}-01`,
-          end: null,
-          status: "open",
-        }
-        doc.projects = [p]
-        doc.expenses = doc.expenses || []
-      }
-
-      setDoc(doc)
-      lastSavedDocRef.current = JSON.stringify(doc)
-
-      // restaura projeto selecionado
-      let pid = ""
-      try { pid = localStorage.getItem(`project:${s}`) || "" } catch {}
-      const ok = doc.projects.find(p => p.id === pid)
-      setSelectedProjectId(ok ? pid : doc.projects[0]?.id || "")
-    } catch (err) {
-      setLoadError(err?.message || "Erro ao carregar")
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => { if (slug) loadDoc(slug) }, [slug, loadDoc])
-
-  /* ========= Salvar com debounce ========= */
-  const doSaveNow = useCallback(async (nextDoc) => {
-    if (!slug) return
-    setSaveState({ status: "saving", at: new Date().toISOString(), error: "" })
-    try {
-      await salvarFamilia(slug, nextDoc)
-      lastSavedDocRef.current = JSON.stringify(nextDoc)
-      setSaveState({ status: "ok", at: new Date().toISOString(), error: "" })
-    } catch (err) {
-      setSaveState({ status: "error", at: new Date().toISOString(), error: err?.message || "Falha ao salvar" })
-    }
-  }, [slug])
-
-  const scheduleSave = useCallback((nextDoc) => {
-    if (saveTimer.current) clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(() => { doSaveNow(nextDoc) }, 800)
-  }, [doSaveNow])
-
-  const setDocAndSave = useCallback((updater) => {
-    setDoc(prev => {
-      const draft = structuredClone(prev)
-      const res = typeof updater === "function" ? updater(draft) : updater
-      const next = res ?? draft
-      scheduleSave(next)
-      return next
-    })
-  }, [scheduleSave])
-
-  /* ========= Seleção/Criação de família ========= */
-  const handleSetSlug = () => {
-    if (!slug.trim()) return
-    try { localStorage.setItem("family:slug", slug) } catch {}
-    loadDoc(slug)
-  }
-
-  /* ========= Projetos ========= */
-  const projects = doc.projects || []
+  // ----- Projeto atual -----
+  const [selectedProjectId, setSelectedProjectId] = useState("")
   const selectedProject = useMemo(() => projects.find(p => p.id === selectedProjectId) || null, [projects, selectedProjectId])
   const isClosed = selectedProject?.status === "closed"
   const readOnly = false // <— PROJETO FECHADO CONTINUA EDITÁVEL
 
-  const createProject = (type, name, start, end = null) => {
-    const p = { id: "proj-" + uid(), name, type, start, end, status: "open" }
-    setDocAndSave(d => {
-      d.projects.push(p)
-    })
-    setSelectedProjectId(p.id)
-    try { if (slug) localStorage.setItem(`project:${slug}`, p.id) } catch {}
-    setShowNewProject(false)
-  }
+  // ----- Inputs de criação de projeto -----
+  const [showNewProject, setShowNewProject] = useState(false)
+  const [newProjectType, setNewProjectType] = useState("monthly") // monthly | trip | custom
+  const [newProjectName, setNewProjectName] = useState("")
+  const [newProjectStart, setNewProjectStart] = useState(firstDayOfMonth(todayYYYYMM()))
+  const [newProjectEnd, setNewProjectEnd] = useState("")
 
-  const closeCurrentProject = () => {
+  // ----- Inputs e filtros de despesas -----
+  const [who, setWho] = useState("")
+  const [category, setCategory] = useState("")
+  const [amount, setAmount] = useState("")
+  const [desc, setDesc] = useState("")
+  const [date, setDate] = useState(new Date().toISOString().slice(0,10))
+
+  const [selectedMonth, setSelectedMonth] = useState(todayYYYYMM())
+  const [filterCat, setFilterCat] = useState("Todos")
+
+  /* ===================== Carregar documento ===================== */
+  const setDocAndSave = useCallback((next) => {
+    const doc = {
+      people, categories, projects, expenses
+    }
+    const merged = typeof next === "function" ? next(doc) : next
+    queueSave(merged)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [people, categories, projects, expenses, slug])
+
+  const queueSave = useCallback((next) => {
+    if (!slug) return
+    if (!next) return
+    setPeople(next.people); setCategories(next.categories); setProjects(next.projects); setExpenses(next.expenses)
+    _queueSave(next)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slug])
+
+  const saveTimer = useRef(null)
+  const _queueSave = useCallback((next) => {
+    if (!slug) return
+    if (saveTimer.current) clearTimeout(saveTimer.current)
+    saveTimer.current = setTimeout(async () => {
+      setSaving(true); setError("")
+      try {
+        const res = await salvarFamilia(slug, {
+          people: next.people,
+          categories: next.categories,
+          projects: next.projects,
+          expenses: next.expenses,
+        })
+        setLastSavedAt(res?.updatedAt || new Date().toISOString())
+      } catch(e) {
+        setError(String(e.message || e))
+      } finally {
+        setSaving(false)
+      }
+    }, 800)
+  }, [slug])
+
+  const loadFromCloud = useCallback(async () => {
+    if (!slugInput) return
+    setLoading(true); setError("")
+    try {
+      const data = await carregarFamilia(slugInput)
+      const doc = data || { people: [], categories: [], projects: [], expenses: [] }
+
+      // migração mínima: se não tiver projetos, cria um mensal do mês atual
+      let nextProjects = Array.isArray(doc.projects) ? doc.projects : []
+      if (!nextProjects.length) {
+        nextProjects = [{
+          id: "proj-" + Math.random().toString(36).slice(2),
+          name: todayYYYYMM(),
+          type: "monthly",
+          start: firstDayOfMonth(todayYYYYMM()),
+          end: "",
+          status: "open"
+        }]
+      }
+
+      setPeople(Array.isArray(doc.people) ? doc.people : [])
+      setCategories(Array.isArray(doc.categories) ? doc.categories : [])
+      setProjects(nextProjects)
+      setExpenses(Array.isArray(doc.expenses) ? doc.expenses : [])
+
+      setSlug(slugInput)
+      localStorage.setItem("family:slug", slugInput)
+
+      // projeto selecionado
+      const localPid = localStorage.getItem(`project:${slugInput}`) || nextProjects[0]?.id || ""
+      setSelectedProjectId(localPid)
+      setSelectedMonth(todayYYYYMM())
+    } catch(e) {
+      setError(String(e.message || e))
+    } finally {
+      setLoading(false)
+    }
+  }, [slugInput])
+
+  /* ===================== Autosave (debounce) ===================== */
+  const saveTimer2 = useRef(null)
+  const queueSave2 = useCallback((next) => {
+    if (!slug) return
+    if (saveTimer2.current) clearTimeout(saveTimer2.current)
+    saveTimer2.current = setTimeout(()=>_queueSave(next), 800)
+  }, [_queueSave, slug])
+
+  /* ===================== Ações: Projeto ===================== */
+  function closeCurrentProject() {
     if (!selectedProject) return
-    const ok = confirm(`Fechar o projeto "${selectedProject.name}"?`)
+    const ok = confirm(`Fechar o projeto "${selectedProject.name}"? O status ficará "fechado" e a data de término será marcada, mas você ainda poderá editar se quiser.`)
     if (!ok) return
     setDocAndSave(d => {
-      d.projects = d.projects.map(p => p.id === selectedProject.id ? { ...p, status: "closed", end: todayYYYYMMDD() } : p)
+      d.projects = d.projects.map(p => p.id === selectedProject.id ? { ...p, status: "closed", end: p.end || new Date().toISOString().slice(0,10) } : p)
+      return d
     })
   }
 
-  const reopenCurrentProject = () => {
+  function reopenCurrentProject() {
     if (!selectedProject) return
     const ok = confirm(`Reabrir o projeto "${selectedProject.name}"?`)
     if (!ok) return
     setDocAndSave(d => {
-      d.projects = d.projects.map(p => p.id === selectedProject.id ? { ...p, status: "open", end: null } : p)
+      d.projects = d.projects.map(p => p.id === selectedProject.id ? { ...p, status: "open", end: p.end || null } : p)
+      return d
     })
   }
 
-  const deleteCurrentProject = () => {
+  function deleteCurrentProject() {
     if (!selectedProject) return
-    const ok = confirm(`Excluir o projeto "${selectedProject.name}"?\nTodas as DESPESAS desse projeto serão apagadas. Esta ação não pode ser desfeita.`)
+    const ok = confirm(`Excluir o projeto "${selectedProject.name}"? Todas as despesas desse projeto serão apagadas. Esta ação não pode ser desfeita.`)
     if (!ok) return
     const next = projects.find(p => p.id !== selectedProject.id) || null
     setDocAndSave(d => {
-      d.expenses = (d.expenses || []).filter(e => e.projectId !== selectedProject.id)
-      d.projects  = (d.projects || []).filter(p => p.id !== selectedProject.id)
+      d.expenses = d.expenses.filter(e => e.projectId !== selectedProject.id)
+      d.projects = d.projects.filter(p => p.id !== selectedProject.id)
+      return d
     })
     setSelectedProjectId(next?.id || "")
     try { if (slug) localStorage.setItem(`project:${slug}`, next?.id || "") } catch {}
   }
 
-  /* ========= Pessoas & Categorias ========= */
-  const addPerson = (name) => {
-    name = (name || "").trim()
-    if (!name) return
-    if (doc.people.includes(name)) return
-    setDocAndSave(d => { d.people.push(name) })
-  }
-  const removePerson = (name) => {
-    if (!confirm(`Remover a pessoa "${name}"? As despesas dela serão apagadas.`)) return
+  function createProject() {
+    const type = newProjectType
+    const name = (newProjectName || "").trim()
+    let finalName = name
+    let start = newProjectStart
+    let end = newProjectEnd
+
+    if (type === "monthly") {
+      finalName = finalName || todayYYYYMM()
+      start = firstDayOfMonth(finalName)
+      end = ""
+    } else {
+      finalName = finalName || (type === "trip" ? "Viagem" : "Projeto")
+    }
+
+    const p = { id: "proj-" + Math.random().toString(36).slice(2), name: finalName, type, start, end, status: "open" }
     setDocAndSave(d => {
-      d.people = d.people.filter(p => p !== name)
-      d.expenses = d.expenses.filter(e => e.who !== name)
+      d.projects = [...d.projects, p]
+      return d
+    })
+    setSelectedProjectId(p.id)
+    localStorage.setItem(`project:${slug}`, p.id)
+    setShowNewProject(false)
+    setNewProjectName("")
+    setNewProjectStart(firstDayOfMonth(todayYYYYMM()))
+    setNewProjectEnd("")
+    setNewProjectType("monthly")
+  }
+
+  /* ===================== Ações: Pessoas/Categorias ===================== */
+  function addPerson(n) {
+    const name = String(n || "").trim()
+    if (!name) return
+    if (people.includes(name)) return
+    setDocAndSave(d => {
+      d.people = [...d.people, name]
+      return d
+    })
+  }
+  function removePerson(n) {
+    if (!confirm(`Remover a pessoa "${n}"? As despesas dela serão apagadas.`)) return
+    setDocAndSave(d => {
+      d.people = d.people.filter(p => p !== n)
+      d.expenses = d.expenses.filter(e => e.who !== n)
+      return d
     })
   }
 
-  const addCategory = (name) => {
-    name = (name || "").trim()
+  function addCategory(n) {
+    const name = String(n || "").trim()
     if (!name) return
-    if (doc.categories.includes(name)) return
-    setDocAndSave(d => { d.categories.push(name) })
+    if (categories.includes(name)) return
+    setDocAndSave(d => {
+      d.categories = [...d.categories, name]
+      return d
+    })
   }
-  const removeCategory = (name) => {
+  function removeCategory(n) {
     if (!selectedProject) {
-      if (!confirm(`Remover a categoria "${name}" de TODOS os projetos? (Todas as despesas com essa categoria serão apagadas)`)) return
+      if (!confirm(`Remover a categoria "${n}" de TODOS os projetos? Todas as despesas dessa categoria serão apagadas.`)) return
       setDocAndSave(d => {
-        d.categories = d.categories.filter(c => c !== name)
-        d.expenses = d.expenses.filter(e => e.category !== name)
+        d.categories = d.categories.filter(c => c !== n)
+        d.expenses = d.expenses.filter(e => e.category !== n)
+        return d
       })
       return
     }
-    // Pergunta escopo
     const choice = prompt(
-      `Remover a categoria "${name}"\n` +
+      `Remover a categoria "${n}"\n` +
       `Digite:\n` +
       `1 = Remover SOMENTE do projeto atual (${selectedProject.name})\n` +
       `2 = Remover de TODOS os projetos`
     )
     if (choice === "1") {
       setDocAndSave(d => {
-        d.categories = d.categories.filter(c => c !== name)
-        d.expenses = d.expenses.filter(e => !(e.category === name && e.projectId === selectedProject.id))
+        d.categories = d.categories.filter(c => c !== n)
+        d.expenses = d.expenses.filter(e => !(e.category === n && e.projectId === selectedProject.id))
+        return d
       })
     } else if (choice === "2") {
       setDocAndSave(d => {
-        d.categories = d.categories.filter(c => c !== name)
-        d.expenses = d.expenses.filter(e => e.category !== name)
+        d.categories = d.categories.filter(c => c !== n)
+        d.expenses = d.expenses.filter(e => e.category !== n)
+        return d
       })
     }
   }
 
-  /* ========= Despesas ========= */
-  const addExpense = () => {
-    if (readOnly) return
-    if (!selectedProject) return alert("Crie/Selecione um projeto.")
-    const amt = parseBRL(amount)
-    if (!who || !category || !amt || amt <= 0) return
+  /* ===================== Ações: Despesas ===================== */
+  function addExpense() {
+    if (!selectedProject) { alert("Selecione/Crie um projeto."); return }
+    const value = Number(String(amount).replace(",", "."))
+    if (!who || !category || !value || value <= 0 || !date) return
+
     const e = {
-      id: "exp-" + uid(),
+      id: "exp-" + Math.random().toString(36).slice(2),
       who, category,
-      amount: amt,
+      amount: value,
       desc: (desc || "").trim(),
-      date: date || todayYYYYMMDD(),
-      projectId: selectedProject.id,
-      createdAt: new Date().toISOString(),
+      date,
+      projectId: selectedProjectId,
     }
-    setDocAndSave(d => { d.expenses.push(e) })
-    setAmount(""); setDesc("")
+    setDocAndSave(d => {
+      d.expenses = [...d.expenses, e]
+      return d
+    })
+    setWho(""); setCategory(""); setAmount(""); setDesc("")
+  }
+  function removeExpense(id) {
+    setDocAndSave(d => {
+      d.expenses = d.expenses.filter(e => e.id !== id)
+      return d
+    })
   }
 
-  const removeExpense = (id) => {
-    if (readOnly) return
-    setDocAndSave(d => { d.expenses = d.expenses.filter(e => e.id !== id) })
-  }
+  /* ===================== Derivados por Projeto + Mês ===================== */
+  const projectExpenses = useMemo(
+    () => expenses.filter(e => e.projectId === selectedProjectId),
+    [expenses, selectedProjectId]
+  )
 
-  /* ========= Derivados ========= */
-  const people = doc.people || []
-  const categories = doc.categories || []
-  const expensesCurrent = useMemo(() => {
-    const all = doc.expenses || []
-    if (!selectedProject) return []
-    return all.filter(e => e.projectId === selectedProject.id)
-  }, [doc.expenses, selectedProject])
+  const months = useMemo(() => {
+    const s = new Set(projectExpenses.map(e => monthKey(e.date)).filter(Boolean))
+    if (!s.size) s.add(todayYYYYMM())
+    return Array.from(s).sort().reverse()
+  }, [projectExpenses])
 
+  const monthlyExpenses = useMemo(
+    () => projectExpenses.filter(e => monthKey(e.date) === selectedMonth),
+    [projectExpenses, selectedMonth]
+  )
+
+  const filteredExpenses = useMemo(
+    () => monthlyExpenses.filter(e => filterCat === "Todos" || e.category === filterCat),
+    [monthlyExpenses, filterCat]
+  )
+
+  const total = useMemo(() => monthlyExpenses.reduce((s, e) => s + e.amount, 0), [monthlyExpenses])
+
+  // Totais por pessoa (mês)
+  const paidBy = useMemo(() => {
+    const map = {}
+    for (const e of monthlyExpenses) map[e.who] = (map[e.who] || 0) + e.amount
+    return map
+  }, [monthlyExpenses])
+
+  const perHead = useMemo(() => {
+    const n = people.length || 1
+    return total / n
+  }, [people.length, total])
+
+  // Totais por categoria (mês)
   const totalsByCategory = useMemo(() => {
-    const acc = {}
-    for (const e of expensesCurrent) {
-      acc[e.category] = (acc[e.category] || 0) + (e.amount || 0)
-    }
-    return acc
-  }, [expensesCurrent])
+    const map = {}
+    for (const e of monthlyExpenses) map[e.category] = (map[e.category] || 0) + e.amount
+    return map
+  }, [monthlyExpenses])
 
+  // Agrupado por categoria (lista principal)
   const groupedByCategory = useMemo(() => {
     const map = {}
-    for (const e of expensesCurrent) {
-      if (!map[e.category]) map[e.category] = { total: 0, items: [] }
-      map[e.category].total += e.amount || 0
+    for (const e of filteredExpenses) {
+      map[e.category] = map[e.category] || { total: 0, items: [] }
+      map[e.category].total += e.amount
       map[e.category].items.push(e)
     }
     return map
-  }, [expensesCurrent])
+  }, [filteredExpenses])
 
-  /* ========= UI ========= */
-  if (status === "loading") return <div className="p-6">Carregando sessão…</div>
-  if (status === "unauthenticated") return <div className="p-6">Faça login para acessar.</div>
+  // Acertos (quem deve para quem) — simples
+  const settlements = useMemo(() => {
+    // calcula saldo por pessoa: quanto pagou - perHead
+    const saldo = {}
+    for (const p of people) saldo[p] = (paidBy[p] || 0) - perHead
 
+    const devedores = []
+    const credores = []
+    for (const p of people) {
+      const v = Number(saldo[p] || 0)
+      if (v < -0.009) devedores.push({ p, v: -v }) // deve
+      else if (v > 0.009) credores.push({ p, v })  // tem a receber
+    }
+    devedores.sort((a,b)=> b.v - a.v)
+    credores.sort((a,b)=> b.v - a.v)
+
+    const moves = []
+    let i=0, j=0
+    while (i < devedores.length && j < credores.length) {
+      const d = devedores[i], c = credores[j]
+      const x = Math.min(d.v, c.v)
+      moves.push({ from: d.p, to: c.p, value: x })
+      d.v -= x; c.v -= x
+      if (d.v < 0.009) i++
+      if (c.v < 0.009) j++
+    }
+    return moves
+  }, [people, paidBy, perHead])
+
+  /* ===================== UI ===================== */
   return (
-    <div className="min-h-dvh bg-slate-50 text-slate-800">
-      <header className="border-b bg-white">
+    <div className="min-h-dvh bg-slate-50">
+      <header className="bg-white border-b">
         <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <h1 className="text-lg font-semibold">Gastos em Família</h1>
+            <h1 className="font-semibold">Gastos em Família</h1>
             {selectedProject && (
               <span className={`px-2 py-0.5 text-xs rounded ${isClosed ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>
                 {isClosed ? "Projeto fechado" : "Projeto aberto"}
               </span>
             )}
           </div>
-          <div className="flex items-center gap-3">
-            <div className="text-sm text-slate-500">Salvando: {saveState.status === "saving" ? "…" : saveState.status === "ok" ? `ok às ${fmtHora(saveState.at)}` : saveState.status === "error" ? "erro" : "pronto"}</div>
-            <button className="text-sm text-slate-600 hover:underline" onClick={()=>signOut()}>Sair</button>
+          <div className="text-sm text-slate-500">
+            {saving ? "Salvando…" : (lastSavedAt ? `Salvo às ${fmtHora(lastSavedAt)}` : "—")}
           </div>
+          <button onClick={onSignOut} className="text-sm text-slate-600 hover:underline">Sair</button>
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-4 py-6">
-        {/* Seleção/Criação de família */}
-        <section className="mb-6">
-          <div className="flex flex-wrap items-end gap-3">
+      <div className="max-w-6xl mx-auto px-4 py-6">
+        {/* Slug */}
+        <section className="bg-white rounded-2xl shadow p-4 mb-4">
+          <h2 className="font-semibold mb-3">1) Família</h2>
+          <div className="flex flex-wrap items-end gap-2">
             <div>
-              <label className="block text-xs text-slate-500 mb-1">Código da família (slug)</label>
-              <input value={slug} onChange={(e)=>setSlug(e.target.value)} className="px-3 py-2 rounded border bg-white" placeholder="ex.: familia-lucas" />
+              <label className="block text-xs mb-1">Código da família (slug)</label>
+              <input value={slugInput} onChange={(e)=>setSlugInput(e.target.value)} className="px-3 py-2 rounded-xl border" placeholder="ex.: familia-lucas" />
             </div>
-            <button onClick={handleSetSlug} className="px-3 py-2 rounded bg-slate-900 text-white">Usar</button>
-
+            <button onClick={loadFromCloud} className="px-3 py-2 rounded-xl bg-slate-900 text-white">Usar</button>
             {loading && <span className="text-sm text-slate-500">Carregando…</span>}
-            {!!loadError && <span className="text-sm text-red-600">Erro: {loadError}</span>}
+            {!!error && <span className="text-sm text-red-600">Erro: {error}</span>}
           </div>
         </section>
 
-        {/* Se não há slug/doc, para aqui */}
-        {!slug ? (
-          <p className="text-slate-600">Defina o código da família para começar.</p>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {/* Coluna esquerda: projeto, pessoas, categorias */}
-            <div className="md:col-span-1 space-y-6">
-              <div className="p-4 rounded-2xl bg-white border">
-                <div className="flex items-center justify-between">
-                  <h2 className="font-semibold">Projeto</h2>
-                </div>
+        {/* Projeto */}
+        <section className="bg-white rounded-2xl shadow p-4 mb-4">
+          <h2 className="font-semibold mb-3">2) Projeto</h2>
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center gap-2">
+              <select
+                className="px-3 py-2 rounded-xl border min-w-[220px]"
+                value={selectedProjectId}
+                onChange={(e)=>{
+                  setSelectedProjectId(e.target.value)
+                  localStorage.setItem(`project:${slug}`, e.target.value)
+                }}
+              >
+                {projects.map(p => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} {p.status==="closed" ? "(fechado)" : ""}
+                  </option>
+                ))}
+              </select>
 
-                {projects.length > 0 ? (
-                  <div className="mt-3 space-y-3">
-                    <div className="flex items-center gap-2">
-                      <select
-                        className="w-full px-3 py-2 rounded border bg-white"
-                        value={selectedProjectId}
-                        onChange={(e)=>{
-                          const id = e.target.value
-                          setSelectedProjectId(id)
-                          try { if (slug) localStorage.setItem(`project:${slug}`, id) } catch {}
-                        }}
-                      >
-                        {projects.map(p => (
-                          <option key={p.id} value={p.id}>
-                            {p.name} {p.status === "closed" ? " (fechado)" : ""}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button onClick={()=>setShowNewProject(v=>!v)} className="px-3 py-2 rounded-xl bg-blue-600 text-white">Novo projeto</button>
-                      <button
-                        onClick={closeCurrentProject}
-                        disabled={!selectedProject || isClosed}
-                        className={`px-3 py-2 rounded-xl border ${(!selectedProject || isClosed) ? "text-gray-400 border-gray-200" : ""}`}
-                        title={isClosed ? "Já está fechado" : "Fechar projeto atual"}
-                      >
-                        Fechar
-                      </button>
-                      <button
-                        onClick={reopenCurrentProject}
-                        disabled={!selectedProject || !isClosed}
-                        className={`px-3 py-2 rounded-xl border ${(!selectedProject || !isClosed) ? "text-gray-400 border-gray-200" : ""}`}
-                        title={!isClosed ? "Projeto já está aberto" : "Reabrir projeto"}
-                      >
-                        Reabrir
-                      </button>
-                      <button
-                        onClick={deleteCurrentProject}
-                        disabled={!selectedProject}
-                        className={`px-3 py-2 rounded-xl border ${!selectedProject ? "text-gray-400 border-gray-200" : "text-red-700 border-red-200 hover:bg-red-50"}`}
-                        title="Excluir projeto e todas as despesas dele"
-                      >
-                        Excluir
-                      </button>
-                    </div>
-
-                    {showNewProject && (
-                      <div className="mt-3 p-3 rounded-xl bg-slate-50 border">
-                        <NewProjectForm onCreate={createProject} />
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="mt-3">
-                    <button onClick={()=>setShowNewProject(v=>!v)} className="px-3 py-2 rounded-xl bg-blue-600 text-white">Criar primeiro projeto</button>
-                    {showNewProject && <div className="mt-3 p-3 rounded-xl bg-slate-50 border"><NewProjectForm onCreate={createProject} /></div>}
-                  </div>
-                )}
-              </div>
-
-              <div className="p-4 rounded-2xl bg-white border">
-                <h2 className="font-semibold">Pessoas</h2>
-                <TagEditor
-                  items={people}
-                  onAdd={addPerson}
-                  onRemove={removePerson}
-                  placeholder="Adicionar pessoa"
-                />
-              </div>
-
-              <div className="p-4 rounded-2xl bg-white border">
-                <h2 className="font-semibold">Categorias</h2>
-                <TagEditor
-                  items={categories}
-                  onAdd={addCategory}
-                  onRemove={removeCategory}
-                  placeholder="Adicionar categoria"
-                />
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={()=>setShowNewProject(v=>!v)}
+                  className="px-3 py-2 rounded-xl bg-blue-600 text-white"
+                >
+                  Novo projeto
+                </button>
+                <button
+                  onClick={closeCurrentProject}
+                  disabled={!selectedProject || isClosed}
+                  className={`px-3 py-2 rounded-xl border ${(!selectedProject || isClosed) ? "text-gray-400 border-gray-200" : ""}`}
+                  title={isClosed ? "Já está fechado" : "Fechar projeto atual"}
+                >
+                  Fechar projeto
+                </button>
+                <button
+                  onClick={reopenCurrentProject}
+                  disabled={!selectedProject || !isClosed}
+                  className={`px-3 py-2 rounded-xl border ${(!selectedProject || !isClosed) ? "text-gray-400 border-gray-200" : ""}`}
+                  title={!isClosed ? "Projeto já está aberto" : "Reabrir projeto"}
+                >
+                  Reabrir
+                </button>
+                <button
+                  onClick={deleteCurrentProject}
+                  disabled={!selectedProject}
+                  className={`px-3 py-2 rounded-xl border ${!selectedProject ? "text-gray-400 border-gray-200" : "text-red-700 border-red-200 hover:bg-red-50"}`}
+                  title="Excluir projeto e todas as despesas dele"
+                >
+                  Excluir
+                </button>
               </div>
             </div>
 
-            {/* Coluna central: lançamentos e lista */}
-            <div className="md:col-span-2 space-y-6">
-              <div className="p-4 rounded-2xl bg-white border">
-                <h2 className="font-semibold">Nova despesa</h2>
-                <div className="mt-3 grid grid-cols-1 sm:grid-cols-5 gap-3">
-                  <select className="px-3 py-2 rounded border bg-white" value={who} onChange={(e)=>setWho(e.target.value)}>
-                    <option value="">Quem pagou?</option>
-                    {people.map(p => <option key={p} value={p}>{p}</option>)}
-                  </select>
-                  <select className="px-3 py-2 rounded border bg-white" value={category} onChange={(e)=>setCategory(e.target.value)}>
-                    <option value="">Categoria</option>
-                    {categories.map(c => <option key={c} value={c}>{c}</option>)}
-                  </select>
-                  <input className="px-3 py-2 rounded border bg-white" value={amount} onChange={(e)=>setAmount(e.target.value)} inputMode="decimal" placeholder="Valor (ex: 123,45)" />
-                  <input className="px-3 py-2 rounded border bg-white" value={desc} onChange={(e)=>setDesc(e.target.value)} placeholder="Descrição" />
-                  <input className="px-3 py-2 rounded border bg-white" type="date" value={date} onChange={(e)=>setDate(e.target.value)} />
-                </div>
-                <div className="mt-3">
-                  <button onClick={addExpense} className="px-3 py-2 rounded-xl bg-emerald-600 text-white">Adicionar</button>
-                </div>
-              </div>
-
-              <div className="p-4 rounded-2xl bg-white border">
-                <div className="flex items-center justify-between">
-                  <h2 className="font-semibold">Despesas por categoria</h2>
-                  <div className="text-sm text-slate-500">Total: {currency(Object.values(totalsByCategory).reduce((a,b)=>a+b,0))}</div>
-                </div>
-
-                {/* LISTA AGRUPADA — agora com LINHA FINA entre cada CATEGORIA */}
-                <div className="mt-3">
-                  {Object.entries(groupedByCategory).length === 0 ? (
-                    <div className="text-sm text-slate-500">Sem lançamentos.</div>
-                  ) : (
-                    Object.entries(groupedByCategory)
-                      .sort((a,b)=> b[1].total - a[1].total)
-                      .map(([cat, group], idx) => (
-                        <div key={cat} className={idx > 0 ? "pt-4 mt-4 border-t border-slate-200" : ""}>
-                          <div className="flex items-center justify-between">
-                            <h3 className="font-semibold">{cat}</h3>
-                            <div className="font-semibold">{currency(group.total)}</div>
-                          </div>
-                          <ul className="divide-y mt-2">
-                            {group.items
-                              .sort((a,b)=> (a.date > b.date ? -1 : 1))
-                              .map(e => (
-                                <li key={e.id} className="py-2 flex items-center justify-between">
-                                  <div className="min-w-0">
-                                    <div className="text-sm">
-                                      <span className="font-medium">{e.who}</span> — {e.desc || "(sem descrição)"}
-                                    </div>
-                                    <div className="text-xs text-slate-500">{e.date}</div>
-                                  </div>
-                                  <div className="flex items-center gap-3">
-                                    <div className="font-medium">{currency(e.amount)}</div>
-                                    <button onClick={()=>removeExpense(e.id)} className="text-xs px-2 py-1 rounded border hover:bg-red-50 text-red-700 border-red-200">Excluir</button>
-                                  </div>
-                                </li>
-                              ))}
-                          </ul>
-                        </div>
-                      ))
-                  )}
+            {showNewProject && (
+              <div className="border rounded-xl p-3 bg-slate-50">
+                <div className="grid md:grid-cols-5 gap-3">
+                  <div className="md:col-span-1">
+                    <label className="block text-xs mb-1">Tipo</label>
+                    <select value={newProjectType} onChange={(e)=>setNewProjectType(e.target.value)} className="w-full px-3 py-2 rounded-xl border">
+                      <option value="monthly">Mensal</option>
+                      <option value="trip">Viagem</option>
+                      <option value="custom">Personalizado</option>
+                    </select>
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-xs mb-1">Nome</label>
+                    <input value={newProjectName} onChange={(e)=>setNewProjectName(e.target.value)} placeholder="Ex.: 2025-09 ou Viagem Nordeste" className="w-full px-3 py-2 rounded-xl border" />
+                  </div>
+                  <div className="md:col-span-1">
+                    <label className="block text-xs mb-1">Início</label>
+                    <input type="date" value={newProjectStart} onChange={(e)=>setNewProjectStart(e.target.value)} className="w-full px-3 py-2 rounded-xl border" />
+                  </div>
+                  <div className="md:col-span-1">
+                    <label className="block text-xs mb-1">Fim (opcional)</label>
+                    <input type="date" value={newProjectEnd} onChange={(e)=>setNewProjectEnd(e.target.value)} className="w-full px-3 py-2 rounded-xl border" />
+                  </div>
+                  <div className="md:col-span-5 flex justify-end gap-2">
+                    <button onClick={()=>setShowNewProject(false)} className="px-3 py-2 rounded-xl border">Cancelar</button>
+                    <button onClick={createProject} className="px-3 py-2 rounded-xl bg-blue-600 text-white">Criar</button>
+                  </div>
                 </div>
               </div>
+            )}
+          </div>
+        </section>
+
+        {/* Mês (dentro do projeto) */}
+        <section className="bg-white rounded-2xl shadow p-4">
+          <h2 className="font-semibold mb-3">Período (mês) — {selectedProject?.name || "—"}</h2>
+          <div className="flex flex-wrap gap-2">
+            {months.map(m => (
+              <button
+                key={m}
+                onClick={()=>setSelectedMonth(m)}
+                className={`px-3 py-1.5 rounded-full border ${selectedMonth===m ? "bg-slate-900 text-white border-slate-900" : ""}`}
+              >
+                {monthLabel(m)}
+              </button>
+            ))}
+          </div>
+        </section>
+
+        {/* Pessoas / Categorias */}
+        <section className="grid lg:grid-cols-3 gap-4 mt-4">
+          <div className="bg-white rounded-2xl shadow p-4">
+            <h2 className="font-semibold mb-3">Pessoas</h2>
+            <TagEditor items={people} onAdd={addPerson} onRemove={removePerson} placeholder="Adicionar pessoa" />
+          </div>
+          <div className="bg-white rounded-2xl shadow p-4">
+            <h2 className="font-semibold mb-3">Categorias</h2>
+            <TagEditor items={categories} onAdd={addCategory} onRemove={removeCategory} placeholder="Adicionar categoria" />
+          </div>
+          <div className="bg-white rounded-2xl shadow p-4">
+            <h2 className="font-semibold mb-3">Filtro</h2>
+            <div className="flex flex-wrap gap-2">
+              <button onClick={()=>setFilterCat("Todos")} className={`px-3 py-1.5 rounded-full border ${filterCat==="Todos" ? "bg-slate-900 text-white border-slate-900" : ""}`}>Todos</button>
+              {categories.map(c => (
+                <button key={c} onClick={()=>setFilterCat(c)} className={`px-3 py-1.5 rounded-full border ${filterCat===c ? "bg-slate-900 text-white border-slate-900" : ""}`}>{c}</button>
+              ))}
             </div>
           </div>
-        )}
-      </main>
+        </section>
+
+        {/* Nova despesa */}
+        <section className="bg-white rounded-2xl shadow p-4 mt-4">
+          <h2 className="font-semibold mb-3">3) Adicionar despesa {selectedProject ? `em ${selectedProject.name}` : ""}</h2>
+          <div className="grid md:grid-cols-6 gap-3 items-end">
+            <div className="md:col-span-1">
+              <label className="block text-xs mb-1">Quem pagou</label>
+              <select value={who} onChange={(e)=>setWho(e.target.value)} className="w-full px-3 py-2 rounded-xl border" disabled={readOnly}>
+                <option value="">Selecione</option>
+                {people.map((p)=> <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+            <div className="md:col-span-1">
+              <label className="block text-xs mb-1">Categoria</label>
+              <select value={category} onChange={(e)=>setCategory(e.target.value)} className="w-full px-3 py-2 rounded-xl border" disabled={readOnly}>
+                <option value="">Selecione</option>
+                {categories.map((c)=> <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <div className="md:col-span-1">
+              <label className="block text-xs mb-1">Valor</label>
+              <input value={amount} onChange={(e)=>setAmount(e.target.value)} placeholder="ex: 123,45" className="w-full px-3 py-2 rounded-xl border" disabled={readOnly} />
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-xs mb-1">Descrição</label>
+              <input value={desc} onChange={(e)=>setDesc(e.target.value)} placeholder="ex: Mercado" className="w-full px-3 py-2 rounded-xl border" disabled={readOnly} />
+            </div>
+            <div className="md:col-span-1">
+              <label className="block text-xs mb-1">Data</label>
+              <input type="date" value={date} onChange={(e)=>setDate(e.target.value)} className="w-full px-3 py-2 rounded-xl border" disabled={readOnly} />
+            </div>
+            <div className="md:col-span-6 flex justify-end">
+              <button onClick={addExpense} disabled={!selectedProject || readOnly || !who || !category || !amount} className={`px-3 py-2 rounded-xl ${(!selectedProject || readOnly || !who || !category || !amount) ? "bg-gray-200 text-gray-500" : "bg-blue-600 text-white"}`}>
+                Lançar
+              </button>
+            </div>
+          </div>
+        </section>
+
+        {/* Lista (agrupada por categoria) + Resumos */}
+        <section className="grid lg:grid-cols-3 gap-4">
+          {/* Esquerda: despesas agrupadas por categoria (mês + filtro) */}
+          <div className="lg:col-span-2 bg-white rounded-2xl shadow p-4">
+            <h2 className="font-semibold mb-3">
+              Despesas de {monthLabel(selectedMonth)} {selectedProject ? `— ${selectedProject.name}` : ""}{" "}
+              {filterCat!=="Todos" && <span className="text-slate-500">({filterCat})</span>}
+            </h2>
+
+            {Object.keys(groupedByCategory).length === 0 ? (
+              <p className="text-sm text-slate-500">Sem despesas neste mês (ou no filtro aplicado).</p>
+            ) : (
+              <div className="space-y-6">
+                {Object.entries(groupedByCategory)
+                  .sort((a,b)=> b[1].total - a[1].total)
+                  .map(([cat, group], idx) => (
+                  <div key={cat} className={idx>0 ? "pt-4 mt-4 border-t border-slate-200" : ""}>
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-semibold">{cat}</h3>
+                      <div className="font-semibold">{currency(group.total)}</div>
+                    </div>
+                    <ul className="divide-y mt-2">
+                      {group.items.map((e) => (
+                        <li key={e.id} className="py-2 flex items-center justify-between gap-4">
+                          <div className="flex-1">
+                            <div className="font-medium">{e.desc || e.category}</div>
+                            <div className="text-xs text-slate-500">
+                              {e.who} • {new Date(e.date).toLocaleDateString("pt-BR")}
+                            </div>
+                          </div>
+                          <div className="w-28 text-right font-semibold">{currency(e.amount)}</div>
+                          <button onClick={()=>removeExpense(e.id)} className={`text-xs ${readOnly?"text-gray-400":"text-red-600 hover:underline"}`}>
+                            remover
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Direita: Resumos do mês */}
+          <div className="bg-white rounded-2xl shadow p-4 space-y-6">
+            <div>
+              <h3 className="font-semibold mb-2">Quem pagou quanto (rateio)</h3>
+              {people.length === 0 ? (
+                <p className="text-sm text-slate-500">Cadastre as pessoas para ver o rateio.</p>
+              ) : (
+                <ul className="text-sm space-y-1">
+                  {people.map(p => (
+                    <li key={p} className="flex justify-between">
+                      <span>
+                        <b>{p}</b> — pagou {currency(paidBy[p] || 0)} • quota {currency(perHead)}{" "}
+                        <span className={((paidBy[p] || 0) - perHead) >= 0 ? "text-emerald-600" : "text-red-600"}>
+                          ({((paidBy[p] || 0) - perHead >= 0 ? "+" : "") + currency((paidBy[p] || 0) - perHead)})
+                        </span>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div>
+              <h3 className="font-semibold mb-2">Totais por categoria (mês)</h3>
+              {Object.keys(totalsByCategory).length === 0 ? (
+                <p className="text-sm text-slate-500">Sem lançamentos neste mês.</p>
+              ) : (
+                <ul className="text-sm space-y-1">
+                  {Object.entries(totalsByCategory)
+                    .sort((a,b)=> b[1] - a[1])
+                    .map(([cat, val]) => (
+                      <li key={cat} className="flex justify-between">
+                        <span>{cat}</span>
+                        <span className="font-semibold">{currency(val)}</span>
+                      </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div>
+              <h3 className="font-semibold mb-2">Acertos (mês)</h3>
+              {settlements.length === 0 ? (
+                <p className="text-sm text-slate-500">Ninguém deve ninguém (ou ainda faltam lançamentos).</p>
+              ) : (
+                <ul className="space-y-1 text-sm">
+                  {settlements.map((m, idx) => (
+                    <li key={idx} className="flex justify-between">
+                      <span><b>{m.from}</b> deve para <b>{m.to}</b></span>
+                      <span className="font-semibold">{currency(m.value)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <footer className="text-center text-xs text-slate-500 pt-6">
+          Dica: use o mesmo <b>código da família</b> em aparelhos diferentes e organize por <b>Projetos</b> (mês, viagem, etc).
+        </footer>
+      </div>
     </div>
   )
 }
 
-/* ===================== Componentes auxiliares ===================== */
+/* ===================== Componentes ===================== */
 function TagEditor({ items, onAdd, onRemove, placeholder }) {
   const [val, setVal] = useState("")
   return (
     <div>
-      <div className="flex items-center gap-2 mt-2">
+      <div className="flex items-center gap-2">
         <input
-          className="px-3 py-2 rounded border bg-white w-full"
+          className="px-3 py-2 rounded-xl border w-full"
           placeholder={placeholder}
           value={val}
           onChange={(e)=>setVal(e.target.value)}
@@ -530,45 +717,6 @@ function TagEditor({ items, onAdd, onRemove, placeholder }) {
       ) : (
         <div className="text-sm text-slate-500 mt-2">Nenhum item ainda.</div>
       )}
-    </div>
-  )
-}
-
-function NewProjectForm({ onCreate }) {
-  const [type, setType] = useState("monthly")
-  const [name, setName] = useState(monthKey(todayYYYYMMDD()))
-  const [start, setStart] = useState(`${monthKey(todayYYYYMMDD())}-01`)
-  const [end, setEnd] = useState("")
-
-  useEffect(() => {
-    if (type === "monthly") {
-      const yyyyMM = monthKey(todayYYYYMMDD())
-      setName(yyyyMM)
-      setStart(`${yyyyMM}-01`)
-      setEnd("")
-    }
-  }, [type])
-
-  return (
-    <div className="space-y-3">
-      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-        <select className="px-3 py-2 rounded border bg-white" value={type} onChange={(e)=>setType(e.target.value)}>
-          <option value="monthly">Mensal</option>
-          <option value="trip">Viagem</option>
-          <option value="custom">Personalizado</option>
-        </select>
-        <input className="px-3 py-2 rounded border bg-white sm:col-span-3" placeholder="Nome do projeto" value={name} onChange={(e)=>setName(e.target.value)} />
-        <input className="px-3 py-2 rounded border bg-white" type="date" value={start} onChange={(e)=>setStart(e.target.value)} />
-        <input className="px-3 py-2 rounded border bg-white" type="date" value={end} onChange={(e)=>setEnd(e.target.value)} placeholder="Término (opcional)" />
-      </div>
-      <div className="flex items-center gap-2">
-        <button
-          className="px-3 py-2 rounded-xl bg-blue-600 text-white"
-          onClick={()=>onCreate(type, name || "(sem nome)", start || todayYYYYMMDD(), end || null)}
-        >
-          Criar
-        </button>
-      </div>
     </div>
   )
 }
