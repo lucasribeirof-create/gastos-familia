@@ -13,25 +13,3 @@ const handler = NextAuth({
 })
 
 export { handler as GET, handler as POST }
-```
-
----
-
-**2. Agora, vamos enviar essa correção para o GitHub.**
-
-Vá para o seu **PowerShell** e use os três comandos de sempre.
-
-**Prepare a correção:**
-```bash
-git add .
-```
-
-**Etiquete a correção:**
-```bash
-git commit -m "Simplifica configuração do NextAuth para corrigir erro 500"
-```
-
-**Envie a correção:**
-```bash
-git push
-
