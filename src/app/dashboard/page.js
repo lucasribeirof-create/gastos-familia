@@ -1,5 +1,4 @@
-'use client'
-export const dynamic = "force-dynamic";
+"use client"
 import React, { useEffect, useMemo, useState } from "react"
 import { useSession, signOut } from "next-auth/react"
 import { useRouter } from "next/navigation"
@@ -20,7 +19,7 @@ export default function Page() {
   return <GastosApp user={session.user} onSignOut={() => signOut()} />
 }
 
-// ======== SEU APP (idêntico, só acrescentei user + botão Sair) ========
+// ======== APP DE GASTOS (só no cliente) ========
 
 function currency(v) {
   return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });

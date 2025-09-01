@@ -1,5 +1,4 @@
 "use client"
-export const dynamic = "force-dynamic";
 import { signIn, useSession } from "next-auth/react"
 import { useEffect } from "react"
 import { useRouter } from "next/navigation"
@@ -8,8 +7,11 @@ export default function Home() {
   const { status } = useSession()
   const router = useRouter()
 
+  // Se já estiver logado, vai direto para o /dashboard
   useEffect(() => {
-    if (status === "authenticated") router.replace("/dashboard")
+    if (status === "authenticated") {
+      router.replace("/dashboard")
+    }
   }, [status, router])
 
   return (
