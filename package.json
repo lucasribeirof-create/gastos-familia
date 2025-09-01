@@ -11,8 +11,8 @@
   "dependencies": {
     "@next/eslint-plugin-next": "^14.2.4",
     "@vercel/postgres": "^0.9.0",
-    "next": "14.2.4",
-    "next-auth": "5.0.0-beta.19",
+    "next": "^14.2.32",
+    "next-auth": "^4.24.11",
     "pg": "^8.12.0",
     "react": "^18",
     "react-dom": "^18"
