@@ -1,5 +1,5 @@
 import "./globals.css";
-import Providers from "./providers"; // Importando nosso novo arquivo de ajuda
+import Providers from "./providers";
 
 export const metadata = {
   title: "Racha Contas",
@@ -10,7 +10,6 @@ export default function RootLayout({ children }) {
   return (
     <html lang="pt-br">
       <body>
-        {/* Envelopando nosso app com o "Provedor" */}
         <Providers>
           {children}
         </Providers>

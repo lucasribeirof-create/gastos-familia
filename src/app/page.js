@@ -1,19 +1,10 @@
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
 import { useSession, signIn, signOut } from 'next-auth/react';
-
-// --- Ícones para usar na interface ---
-const IconeX = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" fill="currentColor" className="inline-block" viewBox="0 0 16 16">
-        <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
-    </svg>
-);
 
 // Este é o nosso app de gastos de verdade.
 // Movemos ele para dentro de um componente separado.
 function AppDeGastos({ usuario }) {
-  // Todo o código de antes (useState, useEffect, cálculos) vai aqui dentro.
   // Por enquanto, vamos deixar um exemplo simples.
   return (
     <div>
@@ -29,7 +20,7 @@ function AppDeGastos({ usuario }) {
       {/* O resto do nosso app (formulários, listas, etc) entrará aqui no próximo passo */}
       <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200 text-center">
         <h2 className="text-2xl font-bold">Bem-vindo!</h2>
-        <p className="mt-2">O sistema de login está funcionando. O próximo passo será conectar seus gastos a esta conta.</p>
+        <p className="mt-2">O sistema de login está funcionando. O próximo passo será reconectar o app de gastos a esta conta.</p>
       </div>
     </div>
   );
