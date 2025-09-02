@@ -1,8 +1,7 @@
+// src/app/dashboard/page.js
 "use client"
 
-export const dynamic = "force-dynamic"
-export const revalidate = 0
-export const fetchCache = "force-no-store"
+export const dynamic = "force-dynamic" // impede prerender desta rota
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import * as NextAuth from "next-auth/react"
@@ -285,8 +284,8 @@ export default function Page() {
         </div>
       </div>
 
-      {/* 1) Projeto + Compartilhar */}
-      {/* ... (restante idêntico ao arquivo anterior que te passei) ... */}
+      {/* (restante do dashboard igual à versão anterior que você já está usando) */}
+      {/* … todo o conteúdo de projeto, compartilhar, pessoas, categorias, despesas, resumos e gráficos … */}
     </div>
   )
 }

@@ -1,9 +1,6 @@
 "use client"
 
-// Força modo dinâmico e zera SSG/ISR
-export const dynamic = "force-dynamic"
-export const revalidate = 0
-export const fetchCache = "force-no-store"
+export const dynamic = "force-dynamic" // impede SSG/ISR nesta página
 
 import { useEffect } from "react"
 import { useRouter } from "next/navigation"
