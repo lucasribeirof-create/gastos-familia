@@ -2,11 +2,22 @@
 import { NextResponse } from "next/server"
 import { getToken } from "next-auth/jwt"
 import Redis from "ioredis"
-import { canManageMembers } from "../../../../../../utils/authz"
 
+// ===== Permissões inline (sem imports externos) =====
+function roleOf(userEmail, project) {
+  if (!userEmail || !project) return "viewer"
+  if (project.owner === userEmail) return "owner"
+  const m = (project.members || []).find(x => x.email === userEmail)
+  return m?.role || "viewer"
+}
+function canManageMembers(userEmail, project) {
+  return roleOf(userEmail, project) === "owner"
+}
+
+// ===== Redis util =====
 const redis = new Redis(process.env.REDIS_URL)
 const key = (slug) => `family:${slug}`
-function nowISO(){ return new Date().toISOString() }
+const nowISO = () => new Date().toISOString()
 
 export async function POST(req, { params }) {
   const token = await getToken({ req })

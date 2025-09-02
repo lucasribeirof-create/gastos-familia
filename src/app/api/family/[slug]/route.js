@@ -2,14 +2,28 @@
 import { NextResponse } from "next/server"
 import { getToken } from "next-auth/jwt"
 import Redis from "ioredis"
-import { canEditProject, canManageMembers } from "../../../../utils/authz"
 
+// ===== Permissões inline (sem imports externos) =====
+function roleOf(userEmail, project) {
+  if (!userEmail || !project) return "viewer"
+  if (project.owner === userEmail) return "owner"
+  const m = (project.members || []).find(x => x.email === userEmail)
+  return m?.role || "viewer"
+}
+function canManageMembers(userEmail, project) {
+  return roleOf(userEmail, project) === "owner"
+}
+function canEditProject(userEmail, project) {
+  const r = roleOf(userEmail, project)
+  return r === "owner" || r === "editor"
+}
+
+// ===== Redis util =====
 const redis = new Redis(process.env.REDIS_URL)
 const key = (slug) => `family:${slug}`
+const nowISO = () => new Date().toISOString()
 
-function nowISO(){ return new Date().toISOString() }
-
-// === Migração de schema ===
+// ===== Migração de schema =====
 function hashId(s){
   let h = 2166136261>>>0
   for (let i=0;i<s.length;i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) }
@@ -66,13 +80,13 @@ function migrateDocShape(doc, currentUserEmail) {
   return d
 }
 
-// Aplica patch restrito ao projeto ativo (para PUT)
+// ===== Aplicar patch restrito ao projeto ativo =====
 function applyPatch(oldDoc, patch, userEmail) {
   const activeProjectId = patch?.activeProjectId
   const project = (oldDoc.projects || []).find(p => p.id === activeProjectId)
   if (!project) throw new Error("Projeto ativo não encontrado")
 
-  // 1) MEMBERS: só owner pode alterar (aqui só aceitamos via rota dedicada; se vier no PUT, bloqueia)
+  // 1) MEMBERS (normalmente via rota dedicada; se vier aqui, só owner)
   if (Array.isArray(patch.members)) {
     if (!canManageMembers(userEmail, project)) throw new Error("Sem permissão para gerenciar membros")
     project.members = patch.members
@@ -115,6 +129,7 @@ function applyPatch(oldDoc, patch, userEmail) {
   return oldDoc
 }
 
+// ===== Handlers =====
 export async function GET(req, { params }) {
   const token = await getToken({ req })
   const userEmail = token?.email || null

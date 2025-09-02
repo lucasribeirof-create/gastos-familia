@@ -3,7 +3,14 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react"
 import { useSession } from "next-auth/react"
 import { PieChart, Pie, Cell, Tooltip as RTooltip, Legend as RLegend, LineChart, Line, XAxis, YAxis, CartesianGrid, BarChart, Bar } from "recharts"
-import { roleOf } from "../../utils/authz"
+
+// ===== Permissões inline (sem imports externos) =====
+function roleOf(userEmail, project) {
+  if (!userEmail || !project) return "viewer"
+  if (project.owner === userEmail) return "owner"
+  const m = (project.members || []).find(x => x.email === userEmail)
+  return m?.role || "viewer"
+}
 
 // Helpers
 const currency = (v) => (Number(v)||0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})
@@ -28,7 +35,7 @@ export default function DashboardPage() {
   const [activeProjectId, setActiveProjectId] = useState(null)
   const [month, setMonth] = useState(todayYYYYMM())
   const [onlyCategoryId, setOnlyCategoryId] = useState(null)
-  const [viewScope, setViewScope] = useState("month") // "month" | "project"
+  const [viewScope, setViewScope] = useState("month")
   const [showShare, setShowShare] = useState(false)
   const [theme, setTheme] = useState("dark")
 
@@ -248,10 +255,10 @@ export default function DashboardPage() {
 
   const pieData = useMemo(() => {
     return Object.entries(totals.byCat).map(([catId, v]) => {
-      const c = categoriesById.get(catId)
+      const c = new Map((doc?.categories||[]).map(cc=>[cc.id,cc])).get(catId)
       return { name: c?.name || "?", value: v, color: c?.color || "#888" }
     }).sort((a,b)=> b.value-a.value)
-  }, [totals, categoriesById])
+  }, [totals, doc])
 
   if (status !== "authenticated") {
     return <div className="p-6">Faça login para continuar.</div>
@@ -293,28 +300,28 @@ export default function DashboardPage() {
       </div>
 
       <div className="mt-6 grid grid-cols-1 md:grid-cols-6 gap-2">
-        <input aria-label="Data" disabled={!canEdit} className="px-2 py-2 rounded border dark:bg-slate-900" type="date" value={fDate} onChange={e=>setFDate(e.target.value)} />
-        <select aria-label="Pessoa" disabled={!canEdit} className="px-2 py-2 rounded border dark:bg-slate-900" value={fWho} onChange={e=>setFWho(e.target.value)}>
+        <input aria-label="Data" disabled={!myRole || myRole==="viewer"} className="px-2 py-2 rounded border dark:bg-slate-900" type="date" value={fDate} onChange={e=>setFDate(e.target.value)} />
+        <select aria-label="Pessoa" disabled={!myRole || myRole==="viewer"} className="px-2 py-2 rounded border dark:bg-slate-900" value={fWho} onChange={e=>setFWho(e.target.value)}>
           {(doc.people||[]).map(p => <option key={p} value={p}>{p}</option>)}
         </select>
-        <select aria-label="Categoria" disabled={!canEdit} className="px-2 py-2 rounded border dark:bg-slate-900" value={fCat} onChange={e=>setFCat(e.target.value)}>
+        <select aria-label="Categoria" disabled={!myRole || myRole==="viewer"} className="px-2 py-2 rounded border dark:bg-slate-900" value={fCat} onChange={e=>setFCat(e.target.value)}>
           {(doc.categories||[]).sort((a,b)=>(a.order??0)-(b.order??0)).map(c => (
             <option key={c.id} value={c.id}>
               {c.parentId ? "— " : ""}{c.name}
             </option>
           ))}
         </select>
-        <input aria-label="Descrição" disabled={!canEdit} className="px-2 py-2 rounded border dark:bg-slate-900 md:col-span-2" placeholder="Descrição" value={fDesc} onChange={e=>setFDesc(e.target.value)} onKeyDown={onKeyDownAdd} />
-        <input aria-label="Valor" disabled={!canEdit} className="px-2 py-2 rounded border dark:bg-slate-900" placeholder="0,00" value={fVal} onChange={e=>setFVal(e.target.value)} onKeyDown={onKeyDownAdd} />
+        <input aria-label="Descrição" disabled={!myRole || myRole==="viewer"} className="px-2 py-2 rounded border dark:bg-slate-900 md:col-span-2" placeholder="Descrição" value={fDesc} onChange={e=>setFDesc(e.target.value)} onKeyDown={(e)=>{ if(e.key==="Enter"){ e.preventDefault(); addExpense() }}} />
+        <input aria-label="Valor" disabled={!myRole || myRole==="viewer"} className="px-2 py-2 rounded border dark:bg-slate-900" placeholder="0,00" value={fVal} onChange={e=>setFVal(e.target.value)} onKeyDown={(e)=>{ if(e.key==="Enter"){ e.preventDefault(); addExpense() }}} />
         <div className="md:col-span-6 flex justify-end">
-          <button disabled={!canEdit} onClick={addExpense} className="px-3 py-2 rounded bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50">Adicionar</button>
+          <button disabled={!myRole || myRole==="viewer"} onClick={addExpense} className="px-3 py-2 rounded bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50">Adicionar</button>
         </div>
       </div>
 
       <div className="mt-6">
         <div className="flex items-center justify-between">
           <h2 className="font-semibold">Categorias</h2>
-          {canEdit && (
+          {myRole!=="viewer" && (
             <div className="flex gap-2">
               <input aria-label="Nova categoria" className="px-2 py-1 rounded border dark:bg-slate-900" placeholder="Nova categoria…" id="newCatName" />
               <button className="px-3 py-1 rounded bg-slate-700 text-white" onClick={()=>{
@@ -337,14 +344,14 @@ export default function DashboardPage() {
                     className="bg-transparent outline-none border-b border-transparent focus:border-slate-400 dark:focus:border-slate-600"
                     value={c.name}
                     onChange={e=>renameCategory(c.id, e.target.value)}
-                    disabled={!canEdit}
+                    disabled={myRole==="viewer"}
                     aria-label={`Nome da categoria ${c.name}`}
                   />
                 </div>
                 <div className="flex items-center gap-1">
-                  <input type="color" value={c.color} onChange={e=>recolorCategory(c.id, e.target.value)} disabled={!canEdit} aria-label={`Cor da categoria ${c.name}`} />
-                  <button className="px-2 py-0.5 rounded border text-xs" onClick={()=>moveCat(c.id,"up")} disabled={!canEdit}>↑</button>
-                  <button className="px-2 py-0.5 rounded border text-xs" onClick={()=>moveCat(c.id,"down")} disabled={!canEdit}>↓</button>
+                  <input type="color" value={c.color} onChange={e=>recolorCategory(c.id, e.target.value)} disabled={myRole==="viewer"} aria-label={`Cor da categoria ${c.name}`} />
+                  <button className="px-2 py-0.5 rounded border text-xs" onClick={()=>moveCat(c.id,"up")} disabled={myRole==="viewer"}>↑</button>
+                  <button className="px-2 py-0.5 rounded border text-xs" onClick={()=>moveCat(c.id,"down")} disabled={myRole==="viewer"}>↓</button>
                   <button className="px-2 py-0.5 rounded border text-xs" onClick={()=> setOnlyCategoryId(onlyCategoryId===c.id?null:c.id)}>
                     {onlyCategoryId===c.id ? "Mostrar todas" : "Ver só esta"}
                   </button>
@@ -352,7 +359,7 @@ export default function DashboardPage() {
               </div>
               <div className="mt-2 flex items-center gap-2">
                 <label className="text-xs opacity-70">Sub de:</label>
-                <select className="px-2 py-1 rounded border dark:bg-slate-900" value={c.parentId||""} onChange={e=>setParent(c.id, e.target.value || null)} disabled={!canEdit}>
+                <select className="px-2 py-1 rounded border dark:bg-slate-900" value={c.parentId||""} onChange={e=>setParent(c.id, e.target.value || null)} disabled={myRole==="viewer"}>
                   <option value="">— Nenhuma —</option>
                   {(doc.categories||[]).filter(x=>x.id!==c.id).map(pc => (
                     <option key={pc.id} value={pc.id}>{pc.name}</option>
@@ -399,8 +406,14 @@ export default function DashboardPage() {
         <div className="rounded border dark:border-slate-700 p-3">
           <h3 className="font-semibold mb-2">Gastos por Categoria</h3>
           <PieChart width={380} height={280}>
-            <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={100} label={(d)=>`${d.name}: ${currency(d.value)}`}>
-              {pieData.map((d, i) => <Cell key={i} fill={d.color} />)}
+            <Pie data={Object.entries(totals.byCat).map(([catId, v]) => {
+              const c = categoriesById.get(catId)
+              return { name: c?.name || "?", value: v, color: c?.color || "#888" }
+            }).sort((a,b)=> b.value-a.value)} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={100} label={(d)=>`${d.name}: ${currency(d.value)}`}>
+              {Object.entries(totals.byCat).map(([catId, v], i) => {
+                const c = categoriesById.get(catId)
+                return <Cell key={i} fill={c?.color || "#888"} />
+              })}
             </Pie>
             <RTooltip formatter={(v, n)=>[currency(v), n]} />
             <RLegend />
@@ -409,13 +422,32 @@ export default function DashboardPage() {
 
         <div className="rounded border dark:border-slate-700 p-3">
           <h3 className="font-semibold mb-2">Evolução Mensal (Total)</h3>
-          <LineChart width={420} height={280} data={monthsSeries}>
+          <LineChart width={420} height={280} data={useMemo(()=> {
+            if (!doc) return []
+            const list = (doc.expenses || []).filter(e => e.projectId === activeProjectId)
+            const map = new Map()
+            list.forEach(e => {
+              const mk = monthKey(e.date)
+              map.set(mk, (map.get(mk)||0) + (Number(e.amount)||0))
+            })
+            const arr = Array.from(map.entries()).sort((a,b)=>a[0].localeCompare(b[0])).map(([m,v])=>({ month:m, total:v }))
+            for (let i=0;i<arr.length;i++){
+              const w = arr.slice(Math.max(0,i-2), i+1).map(x=>x.total)
+              const mm3 = w.length ? (w.reduce((a,b)=>a+b,0)/w.length) : arr[i].total
+              const prev = i>0 ? arr[i-1].total : null
+              const mom = (prev!=null && prev!==0) ? ((arr[i].total-prev)/prev)*100 : null
+              arr[i].mm3 = mm3
+              arr[i].mom = mom
+            }
+            return arr
+          }, [doc, activeProjectId])}>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="month" tickFormatter={monthLabel} />
             <YAxis />
             <RTooltip formatter={(v, n, p)=> n==="mm3" ? [currency(v), "Média Móvel 3M"] : [currency(v), "Total"]}
               labelFormatter={(l, p)=> {
-                const mom = p?.payload?.[0]?.payload?.mom
+                // p.payload[0] pode não existir em certos hovers; proteger
+                const mom = (p && p.payload && p.payload[0] && p.payload[0].payload && p.payload[0].payload.mom) ?? null
                 return `Mês: ${monthLabel(l)} | Variação MoM: ${mom!=null ? mom.toFixed(1)+"%" : "—"}`
               }} />
             <Line type="monotone" dataKey="total" dot strokeWidth={2} />
@@ -425,7 +457,19 @@ export default function DashboardPage() {
 
         <div className="rounded border dark:border-slate-700 p-3 md:col-span-2">
           <h3 className="font-semibold mb-2">Gastos por Pessoa (mensal)</h3>
-          <BarChart width={860} height={300} data={monthsByPerson}>
+          <BarChart width={860} height={300} data={useMemo(()=> {
+            if (!doc) return []
+            const list = (doc.expenses || []).filter(e => e.projectId === activeProjectId)
+            const map = {}
+            list.forEach(e => {
+              const mk = monthKey(e.date)
+              map[mk] ||= {}
+              map[mk][e.who] = (map[mk][e.who]||0) + (Number(e.amount)||0)
+            })
+            const months = Object.keys(map).sort()
+            const people = Array.from(new Set((doc.people||[])))
+            return months.map(m => ({ month:m, ...people.reduce((acc,p)=>{ acc[p]=map[m][p]||0; return acc },{}) }))
+          }, [doc, activeProjectId])}>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="month" tickFormatter={monthLabel} />
             <YAxis />
@@ -453,7 +497,7 @@ export default function DashboardPage() {
                   {(project?.members||[]).map(m => (
                     <div key={m.email} className="flex items-center justify-between gap-2">
                       <span className="truncate">{m.email}</span>
-                      {myRole==="owner" ? (
+                      {roleOf(session?.user?.email, project)==="owner" ? (
                         <div className="flex items-center gap-2">
                           <select className="px-2 py-1 rounded border dark:bg-slate-900" value={m.role} onChange={e=>changeMemberRole(m.email, e.target.value)}>
                             <option value="viewer">viewer</option>
@@ -469,7 +513,7 @@ export default function DashboardPage() {
                 </div>
               </div>
 
-              {myRole==="owner" && (
+              {roleOf(session?.user?.email, project)==="owner" && (
                 <div className="mt-4 border-t dark:border-slate-700 pt-3">
                   <h4 className="font-medium">Convidar por e-mail</h4>
                   <div className="mt-2 flex items-center gap-2">
