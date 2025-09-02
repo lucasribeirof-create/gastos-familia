@@ -1,3 +1,4 @@
+// src/app/dashboard/page.js
 "use client"
 
 export const dynamic = "force-dynamic"
@@ -104,7 +105,7 @@ function Dashboard() {
   // carregamento inicial
   useEffect(() => {
     if (status === "unauthenticated") {
-      router.push("/api/auth/signin")
+      router.push("/login?callbackUrl=/dashboard")
       return
     }
     if (status !== "authenticated") return
@@ -112,7 +113,7 @@ function Dashboard() {
     const linkFam = search?.get("fam")
     const email = (session && session.user && session.user.email) ? session.user.email : ""
     const autoSlug = slugFromEmail(email)
-    const savedSlug = (linkFam || (typeof localStorage !== "undefined" ? localStorage.getItem("family:slug") : null) || autoSlug)
+    const savedSlug = linkFam || (typeof localStorage !== "undefined" ? localStorage.getItem("family:slug") : null) || autoSlug
 
     if (linkFam && typeof localStorage !== "undefined") localStorage.setItem("family:slug", linkFam)
 
