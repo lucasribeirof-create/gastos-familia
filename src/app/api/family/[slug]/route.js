@@ -1,6 +1,6 @@
 // src/app/api/family/[slug]/route.js
 import { NextResponse } from "next/server"
-import { redis } from "../../../../utils/db"   // <<<< AJUSTE: 4 níveis, não 5
+import { redis } from "@/utils/db"   // usa alias @ => ./src/utils/db
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
