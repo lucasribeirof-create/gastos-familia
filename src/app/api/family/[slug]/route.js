@@ -1,6 +1,9 @@
 // src/app/api/family/[slug]/route.js
 export const dynamic = "force-dynamic"
 
+// ⚠️ IMPORTA O PATCH DE FETCH RELATIVO → ABSOLUTO (antes de tudo que possa usar fetch)
+import "@/app/api/_lib/fetch-abs"
+
 import { getServerSession } from "next-auth"
 import { carregarFamilia, salvarFamilia } from "@/app/actions"
 
@@ -153,7 +156,7 @@ export async function PUT(req, { params }) {
     let body
     try {
       body = await req.json()
-    } catch (e) {
+    } catch {
       return new Response(JSON.stringify({ error: "JSON inválido" }), {
         status: 400,
         headers: { "content-type": "application/json" },
@@ -164,8 +167,6 @@ export async function PUT(req, { params }) {
     const base = sanitizeDoc(body)
 
     // regra de autorização:
-    // - se não houver members em nenhum projeto => libera (migração)
-    // - se houver, precisa ser owner/editor em ALGUM projeto
     const anyWithMembers = base.projects.some(
       (p) => Array.isArray(p?.members) && p.members.length > 0
     )
@@ -186,11 +187,9 @@ export async function PUT(req, { params }) {
     try {
       await salvarFamilia(slug, toSave)
     } catch (e) {
-      // Aqui está o ponto que estava dando 500 — vamos devolver
-      // a mensagem real para você ver o motivo (ex.: credenciais/Redis/Google).
       console.error("[PUT] salvarFamilia falhou:", e)
       const hint =
-        "Verifique as variáveis de ambiente usadas por salvarFamilia (ex.: REDIS_URL / credenciais Google) e o shape do documento."
+        "Alguma camada de persistência falhou. Se seu salvarFamilia usa fetch('/api/...'), agora já está com URL absoluta via patch. Também verifique REDIS_URL/Google creds."
       return new Response(
         JSON.stringify({
           error: "Falha ao salvar",
