@@ -9,13 +9,83 @@ function normEmail(v) {
   return (v || "").toString().trim().toLowerCase()
 }
 
+function todayYYYYMM() {
+  return new Date().toISOString().slice(0, 7)
+}
+function firstDayOfMonth(ym) {
+  return `${ym}-01`
+}
+
+function makeDefaultDoc(ownerEmail) {
+  const pid = "proj-" + Math.random().toString(36).slice(2, 8)
+  return {
+    people: [],
+    categories: ["Mercado", "Carro", "Aluguel", "Lazer"],
+    projects: [
+      {
+        id: pid,
+        name: "Geral",
+        type: "monthly",
+        start: firstDayOfMonth(todayYYYYMM()),
+        end: "",
+        status: "open",
+        members: [{ email: ownerEmail, role: "owner" }],
+      },
+    ],
+    expenses: [],
+  }
+}
+
 /**
- * GET: retorna o documento completo da família (slug)
+ * GET /api/family/[slug]
+ * - Requer usuário logado (para sabermos o e-mail).
+ * - Se o doc não existir, cria automaticamente com o usuário como OWNER, salva e retorna.
  */
 export async function GET(_req, { params }) {
   try {
+    const session = await getServerSession(authOptions).catch(() => null)
+    const me = normEmail(session?.user?.email)
+    if (!me) {
+      return new Response(JSON.stringify({ error: "Não autenticado" }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      })
+    }
+
     const { slug } = params || {}
-    const doc = (await carregarFamilia(slug)) || {}
+    let doc = (await carregarFamilia(slug)) || null
+
+    if (!doc || typeof doc !== "object") {
+      // cria padrão e salva
+      doc = makeDefaultDoc(me)
+      await salvarFamilia(slug, doc)
+    } else {
+      // garante que exista pelo menos um projeto e que o usuário atual
+      // esteja como membro (owner) em algum deles. Se não, injeta.
+      if (!Array.isArray(doc.projects) || doc.projects.length === 0) {
+        doc = makeDefaultDoc(me)
+        await salvarFamilia(slug, doc)
+      } else {
+        let hasMe = false
+        const fixed = doc.projects.map((p) => {
+          const members = Array.isArray(p?.members) ? p.members : []
+          const meIn = members.find((m) => normEmail(m?.email) === me)
+          if (meIn) hasMe = true
+          return { ...p, members }
+        })
+        if (!hasMe) {
+          fixed[0] = {
+            ...fixed[0],
+            members: [{ email: me, role: "owner" }, ...(fixed[0].members || [])],
+          }
+          doc.projects = fixed
+          await salvarFamilia(slug, doc)
+        } else {
+          doc.projects = fixed
+        }
+      }
+    }
+
     return Response.json(doc)
   } catch (err) {
     console.error("GET /api/family error:", err)
@@ -27,11 +97,9 @@ export async function GET(_req, { params }) {
 }
 
 /**
- * PUT: salva o documento da família com autorização simples
- * Regras:
- * - Se NENHUM projeto tiver members definidos => permite salvar (migração de dados antigos)
- * - Se houver members em QUALQUER projeto => o e-mail logado precisa estar em ALGUM projeto como owner/editor
- * - viewer NÃO pode salvar
+ * PUT /api/family/[slug]
+ * - Se QUALQUER projeto tiver members, só owner/editor salvam.
+ * - Se por algum motivo vier sem members (caso raro após o GET), libera.
  */
 export async function PUT(req, { params }) {
   try {
@@ -47,19 +115,12 @@ export async function PUT(req, { params }) {
     }
 
     const body = await req.json()
-
-    // Estrutura esperada do doc completo
     const projects = Array.isArray(body?.projects) ? body.projects : []
-
-    // Há pelo menos um projeto com members?
     const anyWithMembers = projects.some(
       (p) => Array.isArray(p?.members) && p.members.length > 0
     )
 
-    // Se NÃO houver members em nenhum projeto => liberar (migração / primeiro save)
     let allowed = !anyWithMembers
-
-    // Se houver members, liberar somente se me ∈ (owner|editor) em algum projeto
     if (!allowed) {
       for (const p of projects) {
         const members = Array.isArray(p?.members) ? p.members : []
