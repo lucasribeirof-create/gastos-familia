@@ -26,6 +26,17 @@ function colorFor(name = "") {
   return `hsl(${hue}, 70%, 45%)`
 }
 
+// ====== Slug automático a partir do e-mail (hash estável legível)
+function hash36(str) {
+  let h = 5381
+  for (let i = 0; i < str.length; i++) h = ((h << 5) + h) + str.charCodeAt(i) // djb2
+  return (h >>> 0).toString(36)
+}
+const slugFromEmail = (email) => {
+  const norm = String(email || "").trim().toLowerCase()
+  return `fam-${hash36(norm)}`
+}
+
 /* ===================== Error Boundary (evita derrubar a página) ===================== */
 class ChartsErrorBoundary extends React.Component {
   constructor(props){ super(props); this.state = { hasError: false } }
@@ -45,11 +56,9 @@ class ChartsErrorBoundary extends React.Component {
 
 /* ===================== Page (proteção por login) ===================== */
 export default function Page() {
-  // usar API namespaced evita “useSession is not defined”
   const sess = NextAuth?.useSession ? NextAuth.useSession() : { data: null, status: "unauthenticated" }
   const { data: session, status } = sess
   const router = useRouter()
-
   useEffect(() => { if (status === "unauthenticated") router.replace("/") }, [status, router])
   if (status === "loading") return <div className="p-6">Carregando…</div>
   if (!session) return <div className="p-6">Faça login para continuar.</div>
@@ -58,8 +67,7 @@ export default function Page() {
 
 /* ===================== App ===================== */
 function GastosApp({ user, onSignOut }) {
-  // ----- Família (slug) -----
-  const [slugInput, setSlugInput] = useState("")
+  // ----- Slug automático (derivado do e-mail) -----
   const [slug, setSlug] = useState("")
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -69,7 +77,7 @@ function GastosApp({ user, onSignOut }) {
   // ----- Documento (nuvem) -----
   const [people, setPeople] = useState([])
   const [categories, setCategories] = useState(["Mercado", "Carro", "Aluguel", "Lazer"])
-  const [projects, setProjects] = useState([]) // {id,name,type,start,end,status}
+  const [projects, setProjects] = useState([]) // {id,name,type,start,end,status, ...}
   const [expenses, setExpenses] = useState([]) // {id, who, category, amount, desc, date, projectId}
 
   // ----- Projeto atual -----
@@ -100,7 +108,7 @@ function GastosApp({ user, onSignOut }) {
 
   // ----- Gráficos -----
   const [chartType, setChartType] = useState("pie") // "pie" | "line"
-  const [isMounted, setIsMounted] = useState(false) // evita render antes do cliente montar
+  const [isMounted, setIsMounted] = useState(false)
   useEffect(() => { setIsMounted(true) }, [])
 
   /* ===================== Persistência / Save ===================== */
@@ -140,7 +148,13 @@ function GastosApp({ user, onSignOut }) {
     }, 800)
   }, [slug])
 
-  /* ===================== Load ===================== */
+  /* ===================== Load: slug automático + migração do local antigo ===================== */
+  const hasData = (doc) => {
+    if (!doc) return false
+    const anyArr = (a) => Array.isArray(a) && a.length > 0
+    return anyArr(doc.people) || anyArr(doc.categories) || anyArr(doc.projects) || anyArr(doc.expenses)
+  }
+
   const loadBySlug = useCallback(async (slugToLoad) => {
     if (!slugToLoad) return
     setLoading(true); setError("")
@@ -173,7 +187,6 @@ function GastosApp({ user, onSignOut }) {
       setSelectedMonth(todayYYYYMM())
       setFilterCat("Todos")
       setFilterWho("Todos")
-      setSlugInput(slugToLoad)
     } catch(e) {
       setError(String(e.message || e))
     } finally {
@@ -181,21 +194,27 @@ function GastosApp({ user, onSignOut }) {
     }
   }, [])
 
-  const loadFromCloud = useCallback(async () => {
-    if (!slugInput) return
-    await loadBySlug(slugInput)
-  }, [slugInput, loadBySlug])
-
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem("family:slug")
-      if (saved) {
-        loadBySlug(saved)
-        return
-      }
-    } catch {}
-    setLoading(false)
-  }, [loadBySlug])
+    (async () => {
+      const email = user?.email
+      if (!email) { setLoading(false); return }
+      const auto = slugFromEmail(email)
+      try {
+        // Migração: se tinha um slug antigo diferente e com dados, copia para o novo
+        const oldSlug = localStorage.getItem("family:slug")
+        if (oldSlug && oldSlug !== auto) {
+          const targetDoc = await carregarFamilia(auto)
+          const sourceDoc = await carregarFamilia(oldSlug)
+          const targetHas = hasData(targetDoc)
+          const sourceHas = hasData(sourceDoc)
+          if (!targetHas && sourceHas) {
+            await salvarFamilia(auto, sourceDoc)
+          }
+        }
+      } catch {}
+      await loadBySlug(auto)
+    })()
+  }, [user?.email, loadBySlug])
 
   /* ===================== Ações: Projeto ===================== */
   function closeCurrentProject() {
@@ -240,7 +259,7 @@ function GastosApp({ user, onSignOut }) {
     const p = { id: "proj-" + Math.random().toString(36).slice(2), name: finalName, type, start, end, status: "open" }
     setDocAndSave(d => { d.projects = [...d.projects, p]; return d })
     setSelectedProjectId(p.id)
-    localStorage.setItem(`project:${slug}`, p.id)
+    try { localStorage.setItem(`project:${slug}`, p.id) } catch {}
     setShowNewProject(false)
     setNewProjectName(""); setNewProjectStart(firstDayOfMonth(todayYYYYMM())); setNewProjectEnd(""); setNewProjectType("monthly")
   }
@@ -426,9 +445,8 @@ function GastosApp({ user, onSignOut }) {
       </header>
 
       <div className="max-w-6xl mx-auto px-4 py-6">
-        {/* Projeto + Família */}
-        <section className="grid lg:grid-cols-2 gap-4 mb-4">
-          {/* Projeto */}
+        {/* Projeto (o card de Família foi removido: slug é automático por e-mail) */}
+        <section className="mb-4">
           <div className="bg-white rounded-2xl shadow p-4">
             <h2 className="font-semibold mb-3">Projeto</h2>
             <div className="flex flex-col gap-3">
@@ -486,20 +504,6 @@ function GastosApp({ user, onSignOut }) {
                   </div>
                 </div>
               )}
-            </div>
-          </div>
-
-          {/* Família */}
-          <div className="bg-white rounded-2xl shadow p-4">
-            <h2 className="font-semibold mb-3">Família</h2>
-            <div className="flex flex-wrap items-end gap-2">
-              <div>
-                <label className="block text-xs mb-1">Código (slug)</label>
-                <input value={slugInput} onChange={(e)=>setSlugInput(e.target.value)} className="px-3 py-2 rounded-xl border" placeholder="ex.: familia-lucas" />
-              </div>
-              <button onClick={loadFromCloud} className="px-3 py-2 rounded-xl bg-slate-900 text-white">Usar</button>
-              {loading && <span className="text-sm text-slate-500">Carregando…</span>}
-              {!!error && <span className="text-sm text-red-600">Erro: {error}</span>}
             </div>
           </div>
         </section>
@@ -789,7 +793,7 @@ function GastosApp({ user, onSignOut }) {
         </section>
 
         <footer className="text-center text-xs text-slate-500 pt-6">
-          Use o mesmo <b>código da família</b> em aparelhos diferentes e organize por <b>Projetos</b> (mês, viagem, etc).
+          Seus dados agora carregam automaticamente pelo seu <b>login</b>. Em breve: <b>convites</b> por e-mail e <b>papéis</b> por projeto.
         </footer>
       </div>
     </div>
