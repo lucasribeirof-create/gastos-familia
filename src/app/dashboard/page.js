@@ -41,9 +41,8 @@ export default function Page() {
   )
 }
 
-// Tudo que usa useSearchParams fica aqui dentro
 function Dashboard() {
-  // ------ NUNCA destruture useSession diretamente ------
+  // ------ acesso seguro ao useSession ------
   const useS = NextAuth?.useSession
   const sess = typeof useS === "function" ? useS() : { data: null, status: "unauthenticated" }
   const session = (sess && "data" in sess) ? sess.data : null
@@ -136,7 +135,7 @@ function Dashboard() {
         if (nextProjects.length === 0) {
           nextProjects = [{
             id: "proj-"+Math.random().toString(36).slice(2,8),
-            name: "Projeto",
+            name: "Geral",
             type: "monthly",
             start: firstDayOfMonth(todayYYYYMM()),
             end: "",
@@ -159,7 +158,7 @@ function Dashboard() {
             amount: Number(e.amount)||0,
             desc: e.desc || "",
             date: e.date || isoToday(),
-            projectId: e.projectId || nextProjects[0].id,
+            projectId: e.projectId || (nextProjects[0]?.id || "proj-default"),
           }
         })
 
@@ -185,12 +184,17 @@ function Dashboard() {
 
   // papel do usuário
   const myEmail = (session && session.user && session.user.email ? session.user.email : "").toLowerCase()
+
+  // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+  // AUTO-OWNER (cliente): se o projeto não tiver members, trate como owner
   const myRole = useMemo(() => {
-    const m = selectedProject && Array.isArray(selectedProject.members)
-      ? selectedProject.members.find(m => (m && m.email ? m.email.toLowerCase() : "") === myEmail)
-      : null
-    return (m && m.role) ? m.role : "none"
+    if (!selectedProject) return "none"
+    const members = Array.isArray(selectedProject.members) ? selectedProject.members : []
+    if (members.length === 0) return "owner"              // <- destrava inputs
+    const me = members.find(m => (m?.email || "").toLowerCase() === myEmail)
+    return me?.role || "none"
   }, [selectedProject, myEmail])
+  // <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
   const readOnly = !(myRole === "owner" || myRole === "editor")
 
@@ -417,7 +421,9 @@ function Dashboard() {
               ))}
             </ul>
           ) : (
-            <div className="text-xs opacity-70">Nenhum membro ainda.</div>
+            <div className="text-xs opacity-70">
+              Nenhum membro ainda. (Edição liberada para você — adicione membros para fixar.)
+            </div>
           ))}
         </div>
 
