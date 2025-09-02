@@ -2,7 +2,8 @@
 export const dynamic = "force-dynamic"
 
 import { getServerSession } from "next-auth"
-import { authOptions } from "../../auth/[...nextauth]/route"
+// ⚠️ Caminho corrigido: de "../../auth/..." para "../auth/..."
+import { authOptions } from "../auth/[...nextauth]/route"
 import { carregarFamilia, salvarFamilia } from "@/app/actions"
 
 function normEmail(v) {
@@ -38,8 +39,8 @@ function makeDefaultDoc(ownerEmail) {
 
 /**
  * GET /api/family/[slug]
- * - Requer usuário logado (para sabermos o e-mail).
- * - Se o doc não existir, cria automaticamente com o usuário como OWNER, salva e retorna.
+ * - Requer usuário logado.
+ * - Se não existir doc, cria com o usuário como OWNER, salva e retorna.
  */
 export async function GET(_req, { params }) {
   try {
@@ -56,12 +57,10 @@ export async function GET(_req, { params }) {
     let doc = (await carregarFamilia(slug)) || null
 
     if (!doc || typeof doc !== "object") {
-      // cria padrão e salva
       doc = makeDefaultDoc(me)
       await salvarFamilia(slug, doc)
     } else {
-      // garante que exista pelo menos um projeto e que o usuário atual
-      // esteja como membro (owner) em algum deles. Se não, injeta.
+      // garante ao menos um projeto e o usuário membro (owner)
       if (!Array.isArray(doc.projects) || doc.projects.length === 0) {
         doc = makeDefaultDoc(me)
         await salvarFamilia(slug, doc)
@@ -98,8 +97,8 @@ export async function GET(_req, { params }) {
 
 /**
  * PUT /api/family/[slug]
- * - Se QUALQUER projeto tiver members, só owner/editor salvam.
- * - Se por algum motivo vier sem members (caso raro após o GET), libera.
+ * - Se houver members, só owner/editor salvam.
+ * - Se não houver members em nenhum projeto, libera (migração).
  */
 export async function PUT(req, { params }) {
   try {
