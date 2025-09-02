@@ -1,831 +1,524 @@
 "use client"
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import * as NextAuth from "next-auth/react"
-import { useRouter } from "next/navigation"
-import { carregarFamilia, salvarFamilia } from "../actions"
+import { useSession } from "next-auth/react"
+import { PieChart, Pie, Cell, Tooltip as RTooltip, Legend as RLegend, LineChart, Line, XAxis, YAxis, CartesianGrid, BarChart, Bar } from "recharts"
+import { roleOf } from "@/utils/authz"
 
-// === Gráficos (recharts)
-import {
-  PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Legend
-} from "recharts"
-
-/* ===================== Helpers ===================== */
-const currency = (v) => (Number.isFinite(v) ? v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) : "R$ 0,00")
+// ===================== Helpers =====================
+const currency = (v) => (Number(v)||0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})
+const fmtDate = (iso) => { try { return new Date(iso).toLocaleDateString("pt-BR") } catch { return "" } }
 const fmtHora = (iso) => { try { return new Date(iso).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"}) } catch { return "" } }
 const monthKey = (dateStr) => (dateStr ? String(dateStr).slice(0,7) : "")
 const monthLabel = (yyyyMM) => (/^\d{4}-\d{2}$/.test(yyyyMM) ? `${yyyyMM.slice(5,7)}/${yyyyMM.slice(0,4)}` : yyyyMM || "")
 const todayYYYYMM = () => new Date().toISOString().slice(0,7)
-const firstDayOfMonth = (yyyyMM) => `${yyyyMM}-01`
+const isoToday = () => new Date().toISOString().slice(0,10)
+const hashId = (s)=>{ let h=2166136261>>>0; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619)} return "id_"+(h>>>0).toString(36) }
+const colorForId = (id)=>{ let h=0; for(let i=0;i<id.length;i++){ h=(h*31+id.charCodeAt(i))%360 } return `hsl(${h} 70% 48%)` }
 
-// ====== Cor única por categoria (HSL baseado no nome)
-function colorFor(name = "") {
-  let h = 0
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0
-  const hue = h % 360
-  return `hsl(${hue}, 70%, 45%)`
+function stableCat(categories, name) {
+  const found = categories.find(c => c.name === name)
+  if (found) return found
+  const id = hashId("cat:"+name)
+  return { id, name, color: colorForId(id), order: categories.length, parentId: null }
 }
 
-// ====== Slug automático a partir do e-mail (hash estável legível)
-function hash36(str) {
-  let h = 5381
-  for (let i = 0; i < str.length; i++) h = ((h << 5) + h) + str.charCodeAt(i) // djb2
-  return (h >>> 0).toString(36)
-}
-const slugFromEmail = (email) => {
-  const norm = String(email || "").trim().toLowerCase()
-  return `fam-${hash36(norm)}`
-}
+// ===================== Component =====================
+export default function DashboardPage() {
+  const { data: session, status } = useSession()
+  const [slug, setSlug] = useState(null)
+  const [doc, setDoc] = useState(null)
+  const [activeProjectId, setActiveProjectId] = useState(null)
+  const [month, setMonth] = useState(todayYYYYMM())
+  const [onlyCategoryId, setOnlyCategoryId] = useState(null)
+  const [viewScope, setViewScope] = useState("month") // "month" | "project"
+  const [showShare, setShowShare] = useState(false)
+  const [theme, setTheme] = useState("dark")
 
-/* ===================== Error Boundary (evita derrubar a página) ===================== */
-class ChartsErrorBoundary extends React.Component {
-  constructor(props){ super(props); this.state = { hasError: false } }
-  static getDerivedStateFromError(){ return { hasError: true } }
-  componentDidCatch(err, info){ console.error("Charts crashed:", err, info) }
-  render(){
-    if (this.state.hasError) {
-      return (
-        <div className="h-72 grid place-items-center text-sm text-red-600">
-          Erro ao renderizar os gráficos. Recarregue a página ou ajuste os filtros.
-        </div>
-      )
-    }
-    return this.props.children
-  }
-}
+  // lançamento form
+  const [fDate, setFDate] = useState(isoToday())
+  const [fWho, setFWho] = useState("")
+  const [fCat, setFCat] = useState("")
+  const [fDesc, setFDesc] = useState("")
+  const [fVal, setFVal] = useState("")
 
-/* ===================== Page (proteção por login) ===================== */
-export default function Page() {
-  const sess = NextAuth?.useSession ? NextAuth.useSession() : { data: null, status: "unauthenticated" }
-  const { data: session, status } = sess
-  const router = useRouter()
-  useEffect(() => { if (status === "unauthenticated") router.replace("/") }, [status, router])
-  if (status === "loading") return <div className="p-6">Carregando…</div>
-  if (!session) return <div className="p-6">Faça login para continuar.</div>
-  return <GastosApp user={session.user} onSignOut={NextAuth.signOut} />
-}
-
-/* ===================== App ===================== */
-function GastosApp({ user, onSignOut }) {
-  // ----- Slug automático (derivado do e-mail) -----
-  const [slug, setSlug] = useState("")
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState("")
-  const [lastSavedAt, setLastSavedAt] = useState(null)
-
-  // ----- Documento (nuvem) -----
-  const [people, setPeople] = useState([])
-  const [categories, setCategories] = useState(["Mercado", "Carro", "Aluguel", "Lazer"])
-  const [projects, setProjects] = useState([]) // {id,name,type,start,end,status, ...}
-  const [expenses, setExpenses] = useState([]) // {id, who, category, amount, desc, date, projectId}
-
-  // ----- Projeto atual -----
-  const [selectedProjectId, setSelectedProjectId] = useState("")
-  const selectedProject = useMemo(() => projects.find(p => p.id === selectedProjectId) || null, [projects, selectedProjectId])
-  const isClosed = selectedProject?.status === "closed"
-  const readOnly = false // projeto fechado continua editável
-
-  // ----- Criar projeto -----
-  const [showNewProject, setShowNewProject] = useState(false)
-  const [newProjectType, setNewProjectType] = useState("monthly")
-  const [newProjectName, setNewProjectName] = useState("")
-  const [newProjectStart, setNewProjectStart] = useState(firstDayOfMonth(todayYYYYMM()))
-  const [newProjectEnd, setNewProjectEnd] = useState("")
-
-  // ----- Lançar despesa -----
-  const [who, setWho] = useState("")
-  const [category, setCategory] = useState("")
-  const [amount, setAmount] = useState("")
-  const [desc, setDesc] = useState("")
-  const [date, setDate] = useState(new Date().toISOString().slice(0,10))
-
-  // ----- Filtros/ordenacao/período -----
-  const [selectedMonth, setSelectedMonth] = useState(todayYYYYMM())
-  const [filterCat, setFilterCat] = useState("Todos")
-  const [filterWho, setFilterWho] = useState("Todos")
-  const [sortOrder, setSortOrder] = useState("desc") // "desc" | "asc"
-
-  // ----- Gráficos -----
-  const [chartType, setChartType] = useState("pie") // "pie" | "line"
-  const [isMounted, setIsMounted] = useState(false)
-  useEffect(() => { setIsMounted(true) }, [])
-
-  /* ===================== Persistência / Save ===================== */
-  const setDocAndSave = useCallback((next) => {
-    const doc = { people, categories, projects, expenses }
-    const merged = typeof next === "function" ? next(doc) : next
-    queueSave(merged)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [people, categories, projects, expenses, slug])
-
-  const queueSave = useCallback((next) => {
-    if (!slug || !next) return
-    setPeople(next.people); setCategories(next.categories); setProjects(next.projects); setExpenses(next.expenses)
-    _queueSave(next)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slug])
-
-  const saveTimer = useRef(null)
-  const _queueSave = useCallback((next) => {
-    if (!slug) return
-    if (saveTimer.current) clearTimeout(saveTimer.current)
-    saveTimer.current = setTimeout(async () => {
-      setSaving(true); setError("")
-      try {
-        const res = await salvarFamilia(slug, {
-          people: next.people,
-          categories: next.categories,
-          projects: next.projects,
-          expenses: next.expenses,
-        })
-        setLastSavedAt(res?.updatedAt || new Date().toISOString())
-      } catch(e) {
-        setError(String(e.message || e))
-      } finally {
-        setSaving(false)
-      }
-    }, 800)
-  }, [slug])
-
-  /* ===================== Load: slug automático + migração do local antigo ===================== */
-  const hasData = (doc) => {
-    if (!doc) return false
-    const anyArr = (a) => Array.isArray(a) && a.length > 0
-    return anyArr(doc.people) || anyArr(doc.categories) || anyArr(doc.projects) || anyArr(doc.expenses)
-  }
-
-  const loadBySlug = useCallback(async (slugToLoad) => {
-    if (!slugToLoad) return
-    setLoading(true); setError("")
-    try {
-      const data = await carregarFamilia(slugToLoad)
-      const doc = data || { people: [], categories: [], projects: [], expenses: [] }
-
-      let nextProjects = Array.isArray(doc.projects) ? doc.projects : []
-      if (!nextProjects.length) {
-        nextProjects = [{
-          id: "proj-" + Math.random().toString(36).slice(2),
-          name: todayYYYYMM(),
-          type: "monthly",
-          start: firstDayOfMonth(todayYYYYMM()),
-          end: "",
-          status: "open"
-        }]
-      }
-
-      setPeople(Array.isArray(doc.people) ? doc.people : [])
-      setCategories(Array.isArray(doc.categories) ? doc.categories : [])
-      setProjects(nextProjects)
-      setExpenses(Array.isArray(doc.expenses) ? doc.expenses : [])
-
-      setSlug(slugToLoad)
-      localStorage.setItem("family:slug", slugToLoad)
-
-      const localPid = localStorage.getItem(`project:${slugToLoad}`) || nextProjects[0]?.id || ""
-      setSelectedProjectId(localPid)
-      setSelectedMonth(todayYYYYMM())
-      setFilterCat("Todos")
-      setFilterWho("Todos")
-    } catch(e) {
-      setError(String(e.message || e))
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
+  // slug derivado do email (como seu fluxo anterior)
   useEffect(() => {
-    (async () => {
-      const email = user?.email
-      if (!email) { setLoading(false); return }
-      const auto = slugFromEmail(email)
-      try {
-        // Migração: se tinha um slug antigo diferente e com dados, copia para o novo
-        const oldSlug = localStorage.getItem("family:slug")
-        if (oldSlug && oldSlug !== auto) {
-          const targetDoc = await carregarFamilia(auto)
-          const sourceDoc = await carregarFamilia(oldSlug)
-          const targetHas = hasData(targetDoc)
-          const sourceHas = hasData(sourceDoc)
-          if (!targetHas && sourceHas) {
-            await salvarFamilia(auto, sourceDoc)
-          }
-        }
-      } catch {}
-      await loadBySlug(auto)
-    })()
-  }, [user?.email, loadBySlug])
-
-  /* ===================== Ações: Projeto ===================== */
-  function closeCurrentProject() {
-    if (!selectedProject) return
-    const ok = confirm(`Fechar o projeto "${selectedProject.name}"? Você ainda poderá editar.`)
-    if (!ok) return
-    setDocAndSave(d => {
-      d.projects = d.projects.map(p => p.id === selectedProject.id ? { ...p, status: "closed", end: p.end || new Date().toISOString().slice(0,10) } : p)
-      return d
-    })
-  }
-  function reopenCurrentProject() {
-    if (!selectedProject) return
-    const ok = confirm(`Reabrir o projeto "${selectedProject.name}"?`)
-    if (!ok) return
-    setDocAndSave(d => {
-      d.projects = d.projects.map(p => p.id === selectedProject.id ? { ...p, status: "open", end: p.end || null } : p)
-      return d
-    })
-  }
-  function deleteCurrentProject() {
-    if (!selectedProject) return
-    const ok = confirm(`Excluir o projeto "${selectedProject.name}"? Todas as despesas dele serão apagadas. Esta ação não pode ser desfeita.`)
-    if (!ok) return
-    const next = projects.find(p => p.id !== selectedProject.id) || null
-    setDocAndSave(d => {
-      d.expenses = d.expenses.filter(e => e.projectId !== selectedProject.id)
-      d.projects = d.projects.filter(p => p.id !== selectedProject.id)
-      return d
-    })
-    setSelectedProjectId(next?.id || "")
-    try { if (slug) localStorage.setItem(`project:${slug}`, next?.id || "") } catch {}
-  }
-  function createProject() {
-    const type = newProjectType
-    const name = (newProjectName || "").trim()
-    let finalName = name
-    let start = newProjectStart
-    let end = newProjectEnd
-    if (type === "monthly") { finalName = finalName || todayYYYYMM(); start = firstDayOfMonth(finalName); end = "" }
-    else { finalName = finalName || (type === "trip" ? "Viagem" : "Projeto") }
-    const p = { id: "proj-" + Math.random().toString(36).slice(2), name: finalName, type, start, end, status: "open" }
-    setDocAndSave(d => { d.projects = [...d.projects, p]; return d })
-    setSelectedProjectId(p.id)
-    try { localStorage.setItem(`project:${slug}`, p.id) } catch {}
-    setShowNewProject(false)
-    setNewProjectName(""); setNewProjectStart(firstDayOfMonth(todayYYYYMM())); setNewProjectEnd(""); setNewProjectType("monthly")
-  }
-
-  /* ===================== Ações: Pessoas/Categorias ===================== */
-  function addPerson(n) {
-    const name = String(n || "").trim()
-    if (!name || people.includes(name)) return
-    setDocAndSave(d => { d.people = [...d.people, name]; return d })
-  }
-  function removePerson(n) {
-    if (!confirm(`Remover a pessoa "${n}"? As despesas dela serão apagadas.`)) return
-    setDocAndSave(d => {
-      d.people = d.people.filter(p => p !== n)
-      d.expenses = d.expenses.filter(e => e.who !== n)
-      return d
-    })
-  }
-  function addCategory(n) {
-    const name = String(n || "").trim()
-    if (!name || categories.includes(name)) return
-    setDocAndSave(d => { d.categories = [...d.categories, name]; return d })
-  }
-  function removeCategory(n) {
-    if (!selectedProject) {
-      if (!confirm(`Remover a categoria "${n}" de TODOS os projetos? Todas as despesas dessa categoria serão apagadas.`)) return
-      setDocAndSave(d => { d.categories = d.categories.filter(c => c !== n); d.expenses = d.expenses.filter(e => e.category !== n); return d })
-      return
+    if (status === "authenticated" && session?.user?.email) {
+      const email = session.user.email.toLowerCase()
+      const s = "fam-" + hashId(email).slice(3) // legível e estável
+      setSlug(s)
     }
-    const choice = prompt(`Remover a categoria "${n}"\n1 = Remover SOMENTE do projeto atual (${selectedProject.name})\n2 = Remover de TODOS os projetos`)
-    if (choice === "1") {
-      setDocAndSave(d => { d.categories = d.categories.filter(c => c !== n); d.expenses = d.expenses.filter(e => !(e.category === n && e.projectId === selectedProject.id)); return d })
-    } else if (choice === "2") {
-      setDocAndSave(d => { d.categories = d.categories.filter(c => c !== n); d.expenses = d.expenses.filter(e => e.category !== n); return d })
-    }
+  }, [status, session])
+
+  // tema
+  useEffect(() => {
+    const saved = localStorage.getItem("theme") || "dark"
+    setTheme(saved)
+    document.documentElement.classList.toggle("dark", saved === "dark")
+  }, [])
+  const toggleTheme = ()=>{
+    const next = theme === "dark" ? "light" : "dark"
+    setTheme(next)
+    localStorage.setItem("theme", next)
+    document.documentElement.classList.toggle("dark", next === "dark")
   }
 
-  /* ===================== Ações: Despesas ===================== */
-  function addExpense() {
-    if (!selectedProject) { alert("Selecione/Crie um projeto."); return }
-    const value = Number(String(amount).replace(",", "."))
-    if (!who || !category || !Number.isFinite(value) || value <= 0 || !date) return
-    const e = { id: "exp-" + Math.random().toString(36).slice(2), who, category, amount: value, desc: (desc || "").trim(), date, projectId: selectedProjectId }
-    setDocAndSave(d => { d.expenses = [...d.expenses, e]; return d })
-    setWho(""); setCategory(""); setAmount(""); setDesc("")
-  }
-  function removeExpense(id) { setDocAndSave(d => { d.expenses = d.expenses.filter(e => e.id !== id); return d }) }
+  // carregar doc
+  const loadDoc = useCallback(async () => {
+    if (!slug) return
+    const res = await fetch(`/api/family/${slug}`, { cache: "no-store" })
+    const j = await res.json()
+    setDoc(j)
+    if (!activeProjectId && j.projects?.length) setActiveProjectId(j.projects[0].id)
+    // defaults de selects
+    if (j.people?.length && !fWho) setFWho(j.people[0])
+    if (j.categories?.length && !fCat) setFCat(j.categories[0]?.id)
+  }, [slug]) // eslint-disable-line
 
-  /* ===================== Derivados por Projeto & Período ===================== */
-  const projectExpenses = useMemo(() => expenses.filter(e => e.projectId === selectedProjectId), [expenses, selectedProjectId])
+  useEffect(() => { loadDoc() }, [loadDoc])
 
-  // meses + "ALL" (Total do projeto)
-  const months = useMemo(() => {
-    const s = new Set(projectExpenses.map(e => monthKey(e.date)).filter(Boolean))
-    if (!s.size) s.add(todayYYYYMM())
-    return ["ALL", ...Array.from(s).sort().reverse()]
-  }, [projectExpenses])
+  // role
+  const myRole = useMemo(() => {
+    if (!doc || !session?.user?.email) return "viewer"
+    const p = doc.projects?.find(p => p.id === activeProjectId)
+    return roleOf(session.user.email, p)
+  }, [doc, session, activeProjectId])
 
-  const monthlyExpenses = useMemo(
-    () => selectedMonth === "ALL" ? projectExpenses : projectExpenses.filter(e => monthKey(e.date) === selectedMonth),
-    [projectExpenses, selectedMonth]
-  )
-
-  const filteredExpenses = useMemo(
-    () => monthlyExpenses.filter(e =>
-      (filterCat === "Todos" || e.category === filterCat) &&
-      (filterWho === "Todos" || e.who === filterWho)
-    ),
-    [monthlyExpenses, filterCat, filterWho]
-  )
-
-  const total = useMemo(() => monthlyExpenses.reduce((s, e) => s + (Number.isFinite(e.amount) ? e.amount : 0), 0), [monthlyExpenses])
-
-  // Totais por pessoa no período mostrado (monthlyExpenses)
-  const paidBy = useMemo(() => {
-    const map = {}
-    for (const e of monthlyExpenses) {
-      const v = Number.isFinite(e.amount) ? e.amount : 0
-      map[e.who] = (map[e.who] || 0) + v
-    }
+  // helpers de dados
+  const categoriesById = useMemo(() => {
+    const map = new Map()
+    ;(doc?.categories || []).forEach(c => map.set(c.id, c))
     return map
-  }, [monthlyExpenses])
+  }, [doc])
 
-  const perHead = useMemo(() => {
-    const n = people.length || 1
-    return total / n
-  }, [people.length, total])
+  const catChildren = useMemo(() => {
+    const byParent = {}
+    (doc?.categories||[]).forEach(c => {
+      const k = c.parentId || "_root"
+      ;(byParent[k] ||= []).push(c)
+    })
+    // ordena por order
+    Object.values(byParent).forEach(list => list.sort((a,b)=> (a.order??0)-(b.order??0)))
+    return byParent
+  }, [doc])
 
-  // Totais por categoria no período mostrado
-  const totalsByCategory = useMemo(() => {
+  const expensesActive = useMemo(() => {
+    if (!doc) return []
+    const list = (doc.expenses || []).filter(e => e.projectId === activeProjectId)
+    const filtered = list.filter(e => {
+      const cat = categoriesById.get(e.category)
+      if (onlyCategoryId && e.category !== onlyCategoryId && cat?.parentId !== onlyCategoryId) return false
+      if (viewScope === "month") return monthKey(e.date) === month
+      return true
+    })
+    return filtered.sort((a,b) => a.date.localeCompare(b.date))
+  }, [doc, activeProjectId, month, onlyCategoryId, viewScope, categoriesById])
+
+  const totals = useMemo(() => {
+    let total = 0
+    const byCat = {}
+    const byWho = {}
+    expensesActive.forEach(e => {
+      const v = Number(e.amount)||0
+      total += v
+      byCat[e.category] = (byCat[e.category]||0)+v
+      byWho[e.who] = (byWho[e.who]||0)+v
+    })
+    return { total, byCat, byWho }
+  }, [expensesActive])
+
+  const monthsSeries = useMemo(() => {
+    if (!doc) return []
+    const list = (doc.expenses || []).filter(e => e.projectId === activeProjectId)
+    const map = new Map()
+    list.forEach(e => {
+      const mk = monthKey(e.date)
+      map.set(mk, (map.get(mk)||0) + (Number(e.amount)||0))
+    })
+    const arr = Array.from(map.entries()).sort((a,b)=>a[0].localeCompare(b[0])).map(([m,v])=>({ month:m, total:v }))
+    // média móvel 3M
+    for (let i=0;i<arr.length;i++){
+      const w = arr.slice(Math.max(0,i-2), i+1).map(x=>x.total)
+      const mm3 = w.length ? (w.reduce((a,b)=>a+b,0)/w.length) : arr[i].total
+      const prev = i>0 ? arr[i-1].total : null
+      const mom = (prev!=null && prev!==0) ? ((arr[i].total-prev)/prev)*100 : null
+      arr[i].mm3 = mm3
+      arr[i].mom = mom
+    }
+    return arr
+  }, [doc, activeProjectId])
+
+  const monthsByPerson = useMemo(() => {
+    if (!doc) return []
+    const list = (doc.expenses || []).filter(e => e.projectId === activeProjectId)
     const map = {}
-    for (const e of monthlyExpenses) {
-      const v = Number.isFinite(e.amount) ? e.amount : 0
-      map[e.category] = (map[e.category] || 0) + v
-    }
-    return map
-  }, [monthlyExpenses])
+    list.forEach(e => {
+      const mk = monthKey(e.date)
+      map[mk] ||= {}
+      map[mk][e.who] = (map[mk][e.who]||0) + (Number(e.amount)||0)
+    })
+    const months = Object.keys(map).sort()
+    const people = Array.from(new Set((doc.people||[])))
+    return months.map(m => ({ month:m, ...people.reduce((acc,p)=>{ acc[p]=map[m][p]||0; return acc },{}) }))
+  }, [doc, activeProjectId])
 
-  // Agrupado por categoria (aplica filtros Cat/Who)
-  const groupedByCategory = useMemo(() => {
-    const map = {}
-    for (const e of filteredExpenses) {
-      const v = Number.isFinite(e.amount) ? e.amount : 0
-      map[e.category] = map[e.category] || { total: 0, items: [] }
-      map[e.category].total += v
-      map[e.category].items.push(e)
+  // ===== Salvar (PUT) - patch por projeto =====
+  const savePatch = useCallback(async (patch) => {
+    if (!slug) return
+    const res = await fetch(`/api/family/${slug}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ activeProjectId, ...patch })
+    })
+    const j = await res.json()
+    if (!j.ok) {
+      alert("Erro ao salvar: " + (j.error || "desconhecido"))
+    } else {
+      await loadDoc()
     }
-    return map
-  }, [filteredExpenses])
+  }, [slug, activeProjectId, loadDoc])
 
-  // Acertos (quem deve para quem) no período mostrado
-  const settlements = useMemo(() => {
-    const saldo = {}
-    for (const p of people) saldo[p] = (paidBy[p] || 0) - perHead
-    const devedores = [], credores = []
-    for (const p of people) {
-      const v = Number(saldo[p] || 0)
-      if (v < -0.009) devedores.push({ p, v: -v })
-      else if (v > 0.009) credores.push({ p, v })
+  // ====== UI: Lançar despesa (Enter confirma) ======
+  const canEdit = myRole === "owner" || myRole === "editor"
+  const addExpense = async () => {
+    if (!canEdit) return
+    if (!fWho || !fCat || !fDate || !fVal) return
+    const exp = {
+      id: null, who: fWho, category: fCat,
+      amount: Number(String(fVal).replace(",", "."))||0,
+      desc: fDesc || "", date: fDate, projectId: activeProjectId
     }
-    devedores.sort((a,b)=> b.v - a.v); credores.sort((a,b)=> b.v - a.v)
-    const moves = []
-    let i=0, j=0
-    while (i < devedores.length && j < credores.length) {
-      const d = devedores[i], c = credores[j]
-      const x = Math.min(d.v, c.v)
-      moves.push({ from: d.p, to: c.p, value: x })
-      d.v -= x; c.v -= x
-      if (d.v < 0.009) i++
-      if (c.v < 0.009) j++
+    const nextExpenses = [...expensesActive, exp]
+    await savePatch({ expenses: nextExpenses })
+    setFDesc(""); setFVal("")
+  }
+  const onKeyDownAdd = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault()
+      addExpense()
     }
-    return moves
-  }, [people, paidBy, perHead])
+  }
 
-  const selectedPeriodLabel = selectedMonth === "ALL" ? "Total" : monthLabel(selectedMonth)
+  // ====== UI: Categorias turbinadas ======
+  const addCategory = async (name, parentId=null) => {
+    if (!canEdit) return
+    const exists = (doc.categories||[]).find(c => c.name.toLowerCase() === name.toLowerCase())
+    const next = exists ? doc.categories : [...doc.categories, stableCat(doc.categories, name)]
+    await savePatch({ categories: next })
+  }
+  const renameCategory = async (id, newName) => {
+    if (!canEdit) return
+    const next = (doc.categories||[]).map(c => c.id===id ? { ...c, name:newName } : c)
+    await savePatch({ categories: next })
+  }
+  const recolorCategory = async (id, color) => {
+    if (!canEdit) return
+    const next = (doc.categories||[]).map(c => c.id===id ? { ...c, color } : c)
+    await savePatch({ categories: next })
+  }
+  const setParent = async (id, parentId) => {
+    if (!canEdit) return
+    if (id===parentId) return
+    const next = (doc.categories||[]).map(c => c.id===id ? { ...c, parentId: parentId||null } : c)
+    await savePatch({ categories: next })
+  }
+  const moveCat = async (id, dir) => {
+    if (!canEdit) return
+    const list = [...(doc.categories||[])].sort((a,b)=> (a.order??0)-(b.order??0))
+    const idx = list.findIndex(c=>c.id===id)
+    if (idx<0) return
+    const j = dir==="up" ? Math.max(0, idx-1) : Math.min(list.length-1, idx+1)
+    ;[list[idx].order, list[j].order] = [list[j].order, list[idx].order]
+    await savePatch({ categories: list })
+  }
 
-  /* ===================== Dados dos GRÁFICOS ===================== */
+  // ====== UI: Compartilhar (membros) ======
+  const project = doc?.projects?.find(p => p.id === activeProjectId)
+  const [inviteEmail, setInviteEmail] = useState("")
+  const [inviteRole, setInviteRole] = useState("viewer")
+
+  const addMember = async () => {
+    if (myRole !== "owner") return
+    const res = await fetch(`/api/family/${slug}/projects/${activeProjectId}/members`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: inviteEmail, role: inviteRole })
+    })
+    const j = await res.json()
+    if (!j.ok) alert("Erro: "+(j.error||""))
+    setInviteEmail("")
+    await loadDoc()
+  }
+  const changeMemberRole = async (email, role) => {
+    if (myRole !== "owner") return
+    const res = await fetch(`/api/family/${slug}/projects/${activeProjectId}/members`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, role })
+    })
+    const j = await res.json()
+    if (!j.ok) alert("Erro: "+(j.error||""))
+    await loadDoc()
+  }
+  const removeMember = async (email) => {
+    if (myRole !== "owner") return
+    const res = await fetch(`/api/family/${slug}/projects/${activeProjectId}/members`, {
+      method: "DELETE", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email })
+    })
+    const j = await res.json()
+    if (!j.ok) alert("Erro: "+(j.error||""))
+    await loadDoc()
+  }
+
+  // ====== Gráficos ======
   const pieData = useMemo(() => {
-    const map = {}
-    for (const e of filteredExpenses) {
-      const v = Number.isFinite(e.amount) ? e.amount : 0
-      map[e.category] = (map[e.category] || 0) + v
-    }
-    return Object.entries(map)
-      .map(([name, value]) => ({ name, value }))
-      .filter(d => Number.isFinite(d.value) && d.value > 0)
-      .sort((a,b)=> b.value - a.value)
-  }, [filteredExpenses])
+    return Object.entries(totals.byCat).map(([catId, v]) => {
+      const c = categoriesById.get(catId)
+      return { name: c?.name || "?", value: v, color: c?.color || "#888" }
+    }).sort((a,b)=> b.value-a.value)
+  }, [totals, categoriesById])
 
-  const lineData = useMemo(() => {
-    const map = {}
-    for (const e of projectExpenses) {
-      if (filterCat !== "Todos" && e.category !== filterCat) continue
-      if (filterWho !== "Todos" && e.who !== filterWho) continue
-      const v = Number.isFinite(e.amount) ? e.amount : 0
-      const m = monthKey(e.date)
-      map[m] = (map[m] || 0) + v
-    }
-    return Object.entries(map)
-      .filter(([m, v]) => m && Number.isFinite(v))
-      .sort((a,b)=> a[0].localeCompare(b[0]))
-      .map(([month, total]) => ({ month, total }))
-  }, [projectExpenses, filterCat, filterWho])
+  // ====== Render ======
+  if (status !== "authenticated") {
+    return <div className="p-6">Faça login para continuar.</div>
+  }
+  if (!doc) return <div className="p-6">Carregando…</div>
 
-  /* ===================== UI ===================== */
   return (
-    <div className="min-h-dvh bg-slate-50">
-      <header className="bg-white border-b">
-        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <h1 className="font-semibold">Gastos em Família</h1>
-            {selectedProject && (
-              <span className={`px-2 py-0.5 text-xs rounded ${isClosed ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>
-                {isClosed ? "Projeto fechado" : "Projeto aberto"}
-              </span>
-            )}
-          </div>
-          <div className="text-sm text-slate-500">
-            {saving ? "Salvando…" : (lastSavedAt ? `Salvo às ${fmtHora(lastSavedAt)}` : "—")}
-          </div>
-          <button onClick={onSignOut} className="text-sm text-slate-600 hover:underline">Sair</button>
+    <div className="p-4 sm:p-6 max-w-6xl mx-auto text-sm text-slate-900 dark:text-slate-100">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-bold">Gastos em Família</h1>
+          <p className="text-xs opacity-70">Projeto selecionado: <b>{project?.name}</b> — Papel: <b>{myRole}</b></p>
         </div>
-      </header>
+        <div className="flex items-center gap-2">
+          <button onClick={toggleTheme} className="px-3 py-1 rounded border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Alternar tema">
+            Tema: {theme==="dark"?"Escuro":"Claro"}
+          </button>
+          {myRole==="owner" && (
+            <button onClick={()=>setShowShare(true)} className="px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white">Compartilhar</button>
+          )}
+        </div>
+      </div>
 
-      <div className="max-w-6xl mx-auto px-4 py-6">
-        {/* Projeto (o card de Família foi removido: slug é automático por e-mail) */}
-        <section className="mb-4">
-          <div className="bg-white rounded-2xl shadow p-4">
-            <h2 className="font-semibold mb-3">Projeto</h2>
-            <div className="flex flex-col gap-3">
-              <div className="flex flex-col md:flex-row md:items-center gap-2">
-                <select
-                  className="px-3 py-2 rounded-xl border min-w-[220px] w-full md:w-auto"
-                  value={selectedProjectId}
-                  onChange={(e)=>{
-                    setSelectedProjectId(e.target.value)
-                    if (slug) localStorage.setItem(`project:${slug}`, e.target.value)
-                  }}
-                >
-                  {projects.map(p => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} {p.status==="closed" ? "(fechado)" : ""}
-                    </option>
+      {/* Projetos + Mês */}
+      <div className="mt-4 flex flex-wrap gap-2 items-center">
+        <label className="text-xs">Projeto:</label>
+        <select className="px-2 py-1 rounded border dark:bg-slate-900" value={activeProjectId||""} onChange={e=>{ setActiveProjectId(e.target.value); setOnlyCategoryId(null) }}>
+          {(doc.projects||[]).map(p => (<option key={p.id} value={p.id}>{p.name}</option>))}
+        </select>
+
+        <div className="h-4 w-px bg-slate-300 dark:bg-slate-700 mx-1" />
+        <label className="text-xs">Período:</label>
+        <input aria-label="Mês" className="px-2 py-1 rounded border dark:bg-slate-900" type="month" value={month} onChange={e=>setMonth(e.target.value)} />
+        <div className="h-4 w-px bg-slate-300 dark:bg-slate-700 mx-1" />
+        <label className="text-xs">Escopo:</label>
+        <select className="px-2 py-1 rounded border dark:bg-slate-900" value={viewScope} onChange={e=>setViewScope(e.target.value)}>
+          <option value="month">Mês</option>
+          <option value="project">Projeto inteiro</option>
+        </select>
+      </div>
+
+      {/* Lançar despesa */}
+      <div className="mt-6 grid grid-cols-1 md:grid-cols-6 gap-2">
+        <input aria-label="Data" disabled={!canEdit} className="px-2 py-2 rounded border dark:bg-slate-900" type="date" value={fDate} onChange={e=>setFDate(e.target.value)} />
+        <select aria-label="Pessoa" disabled={!canEdit} className="px-2 py-2 rounded border dark:bg-slate-900" value={fWho} onChange={e=>setFWho(e.target.value)}>
+          {(doc.people||[]).map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <select aria-label="Categoria" disabled={!canEdit} className="px-2 py-2 rounded border dark:bg-slate-900" value={fCat} onChange={e=>setFCat(e.target.value)}>
+          {(doc.categories||[]).sort((a,b)=>(a.order??0)-(b.order??0)).map(c => (
+            <option key={c.id} value={c.id}>
+              {c.parentId ? "— " : ""}{c.name}
+            </option>
+          ))}
+        </select>
+        <input aria-label="Descrição" disabled={!canEdit} className="px-2 py-2 rounded border dark:bg-slate-900 md:col-span-2" placeholder="Descrição" value={fDesc} onChange={e=>setFDesc(e.target.value)} onKeyDown={onKeyDownAdd} />
+        <input aria-label="Valor" disabled={!canEdit} className="px-2 py-2 rounded border dark:bg-slate-900" placeholder="0,00" value={fVal} onChange={e=>setFVal(e.target.value)} onKeyDown={onKeyDownAdd} />
+        <div className="md:col-span-6 flex justify-end">
+          <button disabled={!canEdit} onClick={addExpense} className="px-3 py-2 rounded bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50">Adicionar</button>
+        </div>
+      </div>
+
+      {/* Categorias */}
+      <div className="mt-6">
+        <div className="flex items-center justify-between">
+          <h2 className="font-semibold">Categorias</h2>
+          {canEdit && (
+            <div className="flex gap-2">
+              <input aria-label="Nova categoria" className="px-2 py-1 rounded border dark:bg-slate-900" placeholder="Nova categoria…" id="newCatName" />
+              <button className="px-3 py-1 rounded bg-slate-700 text-white" onClick={()=>{
+                const el = document.getElementById("newCatName")
+                const v = (el?.value||"").trim()
+                if (v) addCategory(v)
+                if (el) el.value=""
+              }}>Adicionar</button>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-2 grid sm:grid-cols-2 gap-2">
+          {(doc.categories||[]).sort((a,b)=>(a.order??0)-(b.order??0)).map(c => (
+            <div key={c.id} className={`rounded border dark:border-slate-700 p-2 ${onlyCategoryId===c.id ? "ring-2 ring-blue-500" : ""}`}>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="inline-block w-3 h-3 rounded-full" style={{background:c.color}} aria-hidden />
+                  <input
+                    className="bg-transparent outline-none border-b border-transparent focus:border-slate-400 dark:focus:border-slate-600"
+                    value={c.name}
+                    onChange={e=>renameCategory(c.id, e.target.value)}
+                    disabled={!canEdit}
+                    aria-label={`Nome da categoria ${c.name}`}
+                  />
+                </div>
+                <div className="flex items-center gap-1">
+                  <input type="color" value={c.color} onChange={e=>recolorCategory(c.id, e.target.value)} disabled={!canEdit} aria-label={`Cor da categoria ${c.name}`} />
+                  <button className="px-2 py-0.5 rounded border text-xs" onClick={()=>moveCat(c.id,"up")} disabled={!canEdit}>↑</button>
+                  <button className="px-2 py-0.5 rounded border text-xs" onClick={()=>moveCat(c.id,"down")} disabled={!canEdit}>↓</button>
+                  <button className="px-2 py-0.5 rounded border text-xs" onClick={()=> setOnlyCategoryId(onlyCategoryId===c.id?null:c.id)}>
+                    {onlyCategoryId===c.id ? "Mostrar todas" : "Ver só esta"}
+                  </button>
+                </div>
+              </div>
+              {/* Subcategoria */}
+              <div className="mt-2 flex items-center gap-2">
+                <label className="text-xs opacity-70">Sub de:</label>
+                <select className="px-2 py-1 rounded border dark:bg-slate-900" value={c.parentId||""} onChange={e=>setParent(c.id, e.target.value || null)} disabled={!canEdit}>
+                  <option value="">— Nenhuma —</option>
+                  {(doc.categories||[]).filter(x=>x.id!==c.id).map(pc => (
+                    <option key={pc.id} value={pc.id}>{pc.name}</option>
                   ))}
                 </select>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <button onClick={()=>setShowNewProject(v=>!v)} className="px-3 py-2 rounded-xl bg-blue-600 text-white">Novo</button>
-                  <button onClick={closeCurrentProject} disabled={!selectedProject || isClosed} className={`px-3 py-2 rounded-xl border ${(!selectedProject || isClosed) ? "text-gray-400 border-gray-200" : ""}`}>Fechar</button>
-                  <button onClick={reopenCurrentProject} disabled={!selectedProject || !isClosed} className={`px-3 py-2 rounded-xl border ${(!selectedProject || !isClosed) ? "text-gray-400 border-gray-200" : ""}`}>Reabrir</button>
-                  <button onClick={deleteCurrentProject} disabled={!selectedProject} className={`px-3 py-2 rounded-xl border ${!selectedProject ? "text-gray-400 border-gray-200" : "text-red-700 border-red-200 hover:bg-red-50"}`}>Excluir</button>
-                </div>
-              </div>
-
-              {showNewProject && (
-                <div className="border rounded-xl p-3 bg-slate-50">
-                  <div className="grid md:grid-cols-5 gap-3">
-                    <div className="md:col-span-1">
-                      <label className="block text-xs mb-1">Tipo</label>
-                      <select value={newProjectType} onChange={(e)=>setNewProjectType(e.target.value)} className="w-full px-3 py-2 rounded-xl border">
-                        <option value="monthly">Mensal</option>
-                        <option value="trip">Viagem</option>
-                        <option value="custom">Personalizado</option>
-                      </select>
-                    </div>
-                    <div className="md:col-span-2">
-                      <label className="block text-xs mb-1">Nome</label>
-                      <input value={newProjectName} onChange={(e)=>setNewProjectName(e.target.value)} placeholder="Ex.: 2025-09 ou Viagem Nordeste" className="w-full px-3 py-2 rounded-xl border" />
-                    </div>
-                    <div className="md:col-span-1">
-                      <label className="block text-xs mb-1">Início</label>
-                      <input type="date" value={newProjectStart} onChange={(e)=>setNewProjectStart(e.target.value)} className="w-full px-3 py-2 rounded-xl border" />
-                    </div>
-                    <div className="md:col-span-1">
-                      <label className="block text-xs mb-1">Fim (opcional)</label>
-                      <input type="date" value={newProjectEnd} onChange={(e)=>setNewProjectEnd(e.target.value)} className="w-full px-3 py-2 rounded-xl border" />
-                    </div>
-                    <div className="md:col-span-5 flex justify-end gap-2">
-                      <button onClick={()=>setShowNewProject(false)} className="px-3 py-2 rounded-xl border">Cancelar</button>
-                      <button onClick={createProject} className="px-3 py-2 rounded-xl bg-blue-600 text-white">Criar</button>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </section>
-
-        {/* Período */}
-        <section className="bg-white rounded-2xl shadow p-4">
-          <h2 className="font-semibold mb-3">Período — {selectedProject?.name || "—"}</h2>
-          <div className="flex flex-wrap gap-2">
-            {months.map(m => (
-              <button
-                key={m}
-                onClick={()=>setSelectedMonth(m)}
-                className={`px-3 py-1.5 rounded-full border ${selectedMonth===m ? "bg-slate-900 text-white border-slate-900" : ""}`}
-              >
-                {m === "ALL" ? "Total" : monthLabel(m)}
-              </button>
-            ))}
-          </div>
-        </section>
-
-        {/* Pessoas / Categorias / Filtro */}
-        <section className="grid lg:grid-cols-3 gap-4 mt-4">
-          <div className="bg-white rounded-2xl shadow p-4">
-            <h2 className="font-semibold mb-3">Pessoas</h2>
-            <TagEditor items={people} onAdd={addPerson} onRemove={removePerson} placeholder="Adicionar pessoa" />
-          </div>
-          <div className="bg-white rounded-2xl shadow p-4">
-            <h2 className="font-semibold mb-3">Categorias</h2>
-            <TagEditor items={categories} onAdd={addCategory} onRemove={removeCategory} placeholder="Adicionar categoria" />
-          </div>
-          <div className="bg-white rounded-2xl shadow p-4">
-            <h2 className="font-semibold mb-3">Filtro</h2>
-
-            <div className="mb-3">
-              <div className="text-xs mb-1 text-slate-500">Categoria</div>
-              <div className="flex flex-wrap gap-2">
-                <button onClick={()=>setFilterCat("Todos")} className={`px-3 py-1.5 rounded-full border ${filterCat==="Todos" ? "bg-slate-900 text-white border-slate-900" : ""}`}>Todos</button>
-                {categories.map(c => (
-                  <button key={c} onClick={()=>setFilterCat(c)} className={`px-3 py-1.5 rounded-full border ${filterCat===c ? "bg-slate-900 text-white border-slate-900" : ""}`}>{c}</button>
-                ))}
               </div>
             </div>
-
-            <div>
-              <div className="text-xs mb-1 text-slate-500">Pessoa</div>
-              <div className="flex flex-wrap gap-2">
-                <button onClick={()=>setFilterWho("Todos")} className={`px-3 py-1.5 rounded-full border ${filterWho==="Todos" ? "bg-slate-900 text-white border-slate-900" : ""}`}>Todos</button>
-                {people.map(p => (
-                  <button key={p} onClick={()=>setFilterWho(p)} className={`px-3 py-1.5 rounded-full border ${filterWho===p ? "bg-slate-900 text-white border-slate-900" : ""}`}>{p}</button>
-                ))}
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* Nova despesa */}
-        <section className="bg-white rounded-2xl shadow p-4 mt-4">
-          <h2 className="font-semibold mb-3">Adicionar despesa {selectedProject ? `em ${selectedProject.name}` : ""}</h2>
-          <div className="grid md:grid-cols-6 gap-3 items-end">
-            <div className="md:col-span-1">
-              <label className="block text-xs mb-1">Quem pagou</label>
-              <select value={who} onChange={(e)=>setWho(e.target.value)} className="w-full px-3 py-2 rounded-xl border" disabled={readOnly}>
-                <option value="">Selecione</option>
-                {people.map((p)=> <option key={p} value={p}>{p}</option>)}
-              </select>
-            </div>
-            <div className="md:col-span-1">
-              <label className="block text-xs mb-1">Categoria</label>
-              <select value={category} onChange={(e)=>setCategory(e.target.value)} className="w-full px-3 py-2 rounded-xl border" disabled={readOnly}>
-                <option value="">Selecione</option>
-                {categories.map((c)=> <option key={c} value={c}>{c}</option>)}
-              </select>
-            </div>
-            <div className="md:col-span-1">
-              <label className="block text-xs mb-1">Valor</label>
-              <input value={amount} onChange={(e)=>setAmount(e.target.value)} placeholder="ex: 123,45" className="w-full px-3 py-2 rounded-xl border" disabled={readOnly} />
-            </div>
-            <div className="md:col-span-2">
-              <label className="block text-xs mb-1">Descrição</label>
-              <input value={desc} onChange={(e)=>setDesc(e.target.value)} placeholder="ex: Mercado" className="w-full px-3 py-2 rounded-xl border" disabled={readOnly} />
-            </div>
-            <div className="md:col-span-1">
-              <label className="block text-xs mb-1">Data</label>
-              <input type="date" value={date} onChange={(e)=>setDate(e.target.value)} className="w-full px-3 py-2 rounded-xl border" disabled={readOnly} />
-            </div>
-            <div className="md:col-span-6 flex justify-end">
-              <button onClick={addExpense} disabled={!selectedProject || readOnly || !who || !category || !amount} className={`px-3 py-2 rounded-xl ${(!selectedProject || readOnly || !who || !category || !amount) ? "bg-gray-200 text-gray-500" : "bg-blue-600 text-white"}`}>
-                Lançar
-              </button>
-            </div>
-          </div>
-        </section>
-
-        {/* Lista + Resumos */}
-        <section className="grid lg:grid-cols-3 gap-4 mt-4">
-          {/* Esquerda: despesas agrupadas por categoria */}
-          <div className="lg:col-span-2 bg-white rounded-2xl shadow p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="font-semibold">
-                Despesas — {selectedPeriodLabel} {selectedProject ? `• ${selectedProject.name}` : ""}{" "}
-                {filterCat!=="Todos" && <span className="text-slate-500">({filterCat})</span>}
-                {filterWho!=="Todos" && <span className="text-slate-500"> • {filterWho}</span>}
-              </h2>
-              <div className="flex items-center gap-3">
-                <div className="text-sm text-slate-500">Total: {currency(total)}</div>
-                <button
-                  onClick={()=>setSortOrder(prev => prev==="desc" ? "asc" : "desc")}
-                  className="text-xs px-2 py-1 rounded border"
-                  title="Alternar ordenação por data"
-                >
-                  Data: {sortOrder==="desc" ? "recente → antigo" : "antigo → recente"}
-                </button>
-              </div>
-            </div>
-
-            {Object.keys(groupedByCategory).length === 0 ? (
-              <p className="text-sm text-slate-500">Sem despesas no período (ou com o filtro aplicado).</p>
-            ) : (
-              <div className="space-y-6">
-                {Object.entries(groupedByCategory)
-                  .sort((a,b)=> b[1].total - a[1].total)
-                  .map(([cat, group], idx) => {
-                    const itemsSorted = [...group.items].sort((a,b)=>{
-                      if (a.date === b.date) return 0
-                      if (sortOrder === "desc") return a.date > b.date ? -1 : 1
-                      return a.date > b.date ? 1 : -1
-                    })
-                    return (
-                      <div key={cat} className={idx>0 ? "pt-4 mt-4 border-t border-slate-200" : ""}>
-                        <div className="flex items-center justify-between">
-                          <h3 className="font-semibold">{cat}</h3>
-                          <div className="font-semibold">{currency(group.total)}</div>
-                        </div>
-                        <ul className="divide-y mt-2">
-                          {itemsSorted.map((e) => (
-                            <li key={e.id} className="py-2 flex items-center justify-between gap-4">
-                              <div className="flex-1">
-                                <div className="font-medium">{e.desc || e.category}</div>
-                                <div className="text-xs text-slate-500">
-                                  {e.who} • {new Date(e.date).toLocaleDateString("pt-BR")}
-                                </div>
-                              </div>
-                              <div className="w-28 text-right font-semibold">{currency(e.amount)}</div>
-                              <button onClick={()=>removeExpense(e.id)} className={`text-xs ${readOnly?"text-gray-400":"text-red-600 hover:underline"}`}>remover</button>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )
-                  })}
-              </div>
-            )}
-          </div>
-
-          {/* Direita: Resumos do período */}
-          <div className="bg-white rounded-2xl shadow p-4 space-y-6">
-            <div className="rounded-xl border p-3 bg-slate-50">
-              <h3 className="font-semibold mb-1">{selectedMonth==="ALL" ? "Total do período (projeto inteiro)" : "Total do mês"}</h3>
-              <div className="text-2xl font-bold">{currency(total)}</div>
-            </div>
-
-            <div>
-              <h3 className="font-semibold mb-2">Quem pagou quanto (rateio)</h3>
-              {people.length === 0 ? (
-                <p className="text-sm text-slate-500">Cadastre as pessoas para ver o rateio.</p>
-              ) : (
-                <ul className="text-sm space-y-1">
-                  {people.map(p => (
-                    <li key={p} className="flex justify-between">
-                      <span>
-                        <b>{p}</b> — pagou {currency(paidBy[p] || 0)} • quota {currency(perHead)}{" "}
-                        <span className={((paidBy[p] || 0) - perHead) >= 0 ? "text-emerald-600" : "text-red-600"}>
-                          ({((paidBy[p] || 0) - perHead >= 0 ? "+" : "") + currency((paidBy[p] || 0) - perHead)})
-                        </span>
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-
-            <div>
-              <h3 className="font-semibold mb-2">Totais por categoria ({selectedPeriodLabel})</h3>
-              {Object.keys(totalsByCategory).length === 0 ? (
-                <p className="text-sm text-slate-500">Sem lançamentos.</p>
-              ) : (
-                <ul className="text-sm space-y-1">
-                  {Object.entries(totalsByCategory)
-                    .sort((a,b)=> b[1] - a[1])
-                    .map(([cat, val]) => (
-                      <li key={cat} className="flex justify-between">
-                        <span>{cat}</span>
-                        <span className="font-semibold">{currency(val)}</span>
-                      </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-
-            <div>
-              <h3 className="font-semibold mb-2">Acertos ({selectedPeriodLabel})</h3>
-              {settlements.length === 0 ? (
-                <p className="text-sm text-slate-500">Ninguém deve ninguém (ou faltam lançamentos).</p>
-              ) : (
-                <ul className="space-y-1 text-sm">
-                  {settlements.map((m, idx) => (
-                    <li key={idx} className="flex justify-between">
-                      <span><b>{m.from}</b> deve para <b>{m.to}</b></span>
-                      <span className="font-semibold">{currency(m.value)}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </div>
-        </section>
-
-        {/* ===================== Painel: GRÁFICOS ===================== */}
-        <section className="bg-white rounded-2xl shadow p-4 mt-4">
-          <div className="flex items-center justify-between gap-2 mb-2">
-            <h2 className="font-semibold">Gráficos — {selectedProject?.name || "—"}</h2>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={()=>setChartType("pie")}
-                className={`px-3 py-1.5 rounded-full border ${chartType==="pie" ? "bg-slate-900 text-white border-slate-900" : ""}`}
-                title="Distribuição por categoria no período filtrado"
-              >
-                Pizza
-              </button>
-              <button
-                onClick={()=>setChartType("line")}
-                className={`px-3 py-1.5 rounded-full border ${chartType==="line" ? "bg-slate-900 text-white border-slate-900" : ""}`}
-                title="Evolução mensal do projeto (com filtros aplicados)"
-              >
-                Linha
-              </button>
-            </div>
-          </div>
-
-          <div className="text-xs text-slate-500 mb-3">
-            {chartType==="pie"
-              ? <>Categorias de <b>{selectedPeriodLabel}</b> {filterCat!=="Todos" && <>• categoria: <b>{filterCat}</b></>} {filterWho!=="Todos" && <>• pessoa: <b>{filterWho}</b></>} </>
-              : <>Total mensal do projeto (filtros aplicados • {filterCat} • {filterWho})</>
-            }
-          </div>
-
-          <ChartsErrorBoundary>
-            {!isMounted ? (
-              <div className="h-72 grid place-items-center text-sm text-slate-500">Carregando gráfico…</div>
-            ) : chartType === "pie" ? (
-              pieData.length === 0 ? (
-                <div className="h-72 grid place-items-center text-sm text-slate-500">Sem dados para o gráfico de pizza.</div>
-              ) : (
-                <div className="h-72 w-full">
-                  <ResponsiveContainer>
-                    <PieChart>
-                      <Tooltip formatter={(val)=>currency(Number(val))} />
-                      <Legend />
-                      <Pie data={pieData} dataKey="value" nameKey="name" outerRadius={100} label>
-                        {pieData.map((entry) => (
-                          <Cell key={`cell-${entry.name}`} fill={colorFor(entry.name)} />
-                        ))}
-                      </Pie>
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
-              )
-            ) : (
-              lineData.length === 0 ? (
-                <div className="h-72 grid place-items-center text-sm text-slate-500">Sem dados para o gráfico de linha.</div>
-              ) : (
-                <div className="h-72 w-full">
-                  <ResponsiveContainer>
-                    <LineChart data={lineData}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="month" />
-                      <YAxis />
-                      <Tooltip formatter={(val)=>currency(Number(val))} />
-                      <Legend />
-                      <Line type="monotone" dataKey="total" />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              )
-            )}
-          </ChartsErrorBoundary>
-        </section>
-
-        <footer className="text-center text-xs text-slate-500 pt-6">
-          Seus dados agora carregam automaticamente pelo seu <b>login</b>. Em breve: <b>convites</b> por e-mail e <b>papéis</b> por projeto.
-        </footer>
-      </div>
-    </div>
-  )
-}
-
-/* ===================== Componentes ===================== */
-function TagEditor({ items, onAdd, onRemove, placeholder }) {
-  const [val, setVal] = useState("")
-  return (
-    <div>
-      <div className="flex items-center gap-2">
-        <input
-          className="px-3 py-2 rounded-xl border w-full"
-          placeholder={placeholder}
-          value={val}
-          onChange={(e)=>setVal(e.target.value)}
-          onKeyDown={(e)=>{ if (e.key==="Enter"){ onAdd(val); setVal("") } }}
-        />
-        <button className="px-3 py-2 rounded-xl border" onClick={()=>{ onAdd(val); setVal("") }}>Adicionar</button>
-      </div>
-      {items?.length ? (
-        <ul className="mt-3 flex flex-wrap gap-2">
-          {items.map(it => (
-            <li key={it} className="px-2 py-1 rounded-full border bg-slate-50 flex items-center gap-2">
-              <span className="text-sm">{it}</span>
-              <button className="text-xs text-red-700" onClick={()=>onRemove(it)}>×</button>
-            </li>
           ))}
-        </ul>
-      ) : (
-        <div className="text-sm text-slate-500 mt-2">Nenhum item ainda.</div>
+        </div>
+      </div>
+
+      {/* Lista de despesas */}
+      <div className="mt-6">
+        <h2 className="font-semibold">Despesas {viewScope==="month" ? `— ${monthLabel(month)}` : "(projeto inteiro)"} — Total: {currency(totals.total)}</h2>
+        <div className="mt-2 overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="text-left border-b dark:border-slate-700">
+                <th className="py-2 pr-2">Data</th>
+                <th className="py-2 pr-2">Pessoa</th>
+                <th className="py-2 pr-2">Categoria</th>
+                <th className="py-2 pr-2">Descrição</th>
+                <th className="py-2 pr-2 text-right">Valor</th>
+              </tr>
+            </thead>
+            <tbody>
+              {expensesActive.map(e => {
+                const c = categoriesById.get(e.category)
+                return (
+                  <tr key={e.id} className="border-b dark:border-slate-800">
+                    <td className="py-1 pr-2">{fmtDate(e.date)}</td>
+                    <td className="py-1 pr-2">{e.who}</td>
+                    <td className="py-1 pr-2"><span className="inline-flex items-center gap-1"><span className="w-2 h-2 rounded-full" style={{background:c?.color||"#999"}} />{c?.name||"—"}</span></td>
+                    <td className="py-1 pr-2">{e.desc}</td>
+                    <td className="py-1 pr-2 text-right">{currency(e.amount)}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Gráficos */}
+      <div className="mt-8 grid md:grid-cols-2 gap-6">
+        {/* Pizza */}
+        <div className="rounded border dark:border-slate-700 p-3">
+          <h3 className="font-semibold mb-2">Gastos por Categoria</h3>
+          <PieChart width={380} height={280}>
+            <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={100} label={(d)=>`${d.name}: ${currency(d.value)}`}>
+              {pieData.map((d, i) => <Cell key={i} fill={d.color} />)}
+            </Pie>
+            <RTooltip formatter={(v, n)=>[currency(v), n]} />
+            <RLegend />
+          </PieChart>
+        </div>
+
+        {/* Linha com MM3 e MoM */}
+        <div className="rounded border dark:border-slate-700 p-3">
+          <h3 className="font-semibold mb-2">Evolução Mensal (Total)</h3>
+          <LineChart width={420} height={280} data={monthsSeries}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="month" tickFormatter={monthLabel} />
+            <YAxis />
+            <RTooltip formatter={(v, n, p)=> n==="mm3" ? [currency(v), "Média Móvel 3M"] : [currency(v), "Total"]}
+              labelFormatter={(l)=> `Mês: ${monthLabel(l)} | Variação MoM: ${p?.payload?.mom!=null ? p.payload.mom.toFixed(1)+"%" : "—"}`} />
+            <Line type="monotone" dataKey="total" dot strokeWidth={2} />
+            <Line type="monotone" dataKey="mm3" strokeDasharray="5 5" />
+          </LineChart>
+        </div>
+
+        {/* Barras empilhadas por pessoa */}
+        <div className="rounded border dark:border-slate-700 p-3 md:col-span-2">
+          <h3 className="font-semibold mb-2">Gastos por Pessoa (mensal)</h3>
+          <BarChart width={860} height={300} data={monthsByPerson}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis dataKey="month" tickFormatter={monthLabel} />
+            <YAxis />
+            <RTooltip formatter={(v, n)=>[currency(v), n]} />
+            {(doc.people||[]).map((p, idx)=>(
+              <Bar key={p} dataKey={p} stackId="a" fill={`hsl(${(idx*67)%360} 70% 48%)`} />
+            ))}
+          </BarChart>
+        </div>
+      </div>
+
+      {/* Modal Compartilhar */}
+      {showShare && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50" role="dialog" aria-modal="true" aria-label="Compartilhar projeto">
+          <div className="bg-white dark:bg-slate-900 rounded-xl p-4 w-full max-w-lg border dark:border-slate-700 shadow-xl">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold">Compartilhar — {project?.name}</h3>
+              <button onClick={()=>setShowShare(false)} className="px-2 py-1 rounded border">Fechar</button>
+            </div>
+            <div className="mt-3">
+              <p className="text-xs opacity-70">Owner: <b>{project?.owner || "—"}</b></p>
+              <div className="mt-2">
+                <h4 className="font-medium">Membros</h4>
+                <div className="mt-1 space-y-2">
+                  {(project?.members||[]).length===0 && <div className="text-xs opacity-70">Nenhum membro ainda.</div>}
+                  {(project?.members||[]).map(m => (
+                    <div key={m.email} className="flex items-center justify-between gap-2">
+                      <span className="truncate">{m.email}</span>
+                      {myRole==="owner" ? (
+                        <div className="flex items-center gap-2">
+                          <select className="px-2 py-1 rounded border dark:bg-slate-900" value={m.role} onChange={e=>changeMemberRole(m.email, e.target.value)}>
+                            <option value="viewer">viewer</option>
+                            <option value="editor">editor</option>
+                          </select>
+                          <button className="px-2 py-1 rounded bg-red-600 text-white" onClick={()=>removeMember(m.email)}>Remover</button>
+                        </div>
+                      ) : (
+                        <span className="text-xs opacity-70">{m.role}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {myRole==="owner" && (
+                <div className="mt-4 border-t dark:border-slate-700 pt-3">
+                  <h4 className="font-medium">Convidar por e-mail</h4>
+                  <div className="mt-2 flex items-center gap-2">
+                    <input className="px-2 py-1 rounded border dark:bg-slate-900 flex-1" placeholder="email@exemplo.com" value={inviteEmail} onChange={e=>setInviteEmail(e.target.value)} />
+                    <select className="px-2 py-1 rounded border dark:bg-slate-900" value={inviteRole} onChange={e=>setInviteRole(e.target.value)}>
+                      <option value="viewer">viewer</option>
+                      <option value="editor">editor</option>
+                    </select>
+                    <button className="px-3 py-1 rounded bg-blue-600 text-white" onClick={addMember}>Adicionar</button>
+                  </div>
+                  <p className="text-[11px] opacity-70 mt-1">Obs: por enquanto o convite é direto (sem e-mail). A pessoa precisa fazer login com esse e-mail.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

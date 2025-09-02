@@ -1,193 +1,163 @@
-// src/app/api/family/[slug]/route.js
+// /src/app/api/family/[slug]/route.js
 import { NextResponse } from "next/server"
-import Redis from "ioredis"
 import { getToken } from "next-auth/jwt"
-import { randomUUID } from "crypto"
+import Redis from "ioredis"
+import { canEditProject, canManageMembers } from "@/utils/authz"
 
-export const runtime = "nodejs"
-export const dynamic = "force-dynamic"
-export const revalidate = 0
-
-// Conexão Redis (usa REDIS_URL da Vercel)
 const redis = new Redis(process.env.REDIS_URL)
-
 const key = (slug) => `family:${slug}`
 
-function makeDefaultProject() {
-  return {
-    id: `proj-${randomUUID()}`,
-    name: "Geral",
-    type: "general",      // "monthly" | "trip" | "custom" etc.
-    start: new Date().toISOString().slice(0, 10), // YYYY-MM-DD
-    end: null,
-    status: "open",       // "open" | "closed"
-  }
+function nowISO(){ return new Date().toISOString() }
+
+// === Migração de schema ===
+// - Converte categories: string[] -> {id,name,color,parentId?,order}
+// - Garante project.owner e project.members
+// - Garante campos base
+function hashId(s){
+  // hash leve estável p/ id/cores; evita colidir com ids existentes que não são hash
+  let h = 2166136261>>>0
+  for (let i=0;i<s.length;i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) }
+  return "id_"+(h>>>0).toString(36)
+}
+function colorForId(id){
+  // cor HSL estável baseada no id (0..360)
+  let h = 0
+  for (let i=0;i<id.length;i++){ h = (h*31 + id.charCodeAt(i)) % 360 }
+  return `hsl(${h} 70% 48%)`
 }
 
-function makeDefaultDoc() {
-  const createdAt = new Date().toISOString()
-  return {
-    people: [],
-    categories: ["Mercado", "Carro", "Aluguel", "Lazer"],
-    projects: [makeDefaultProject()],
-    expenses: [], // { id, who, category, amount, desc, date, projectId }
-    createdAt,
-    updatedAt: createdAt,
+function migrateDocShape(doc, currentUserEmail) {
+  const d = doc && typeof doc === "object" ? structuredClone(doc) : {}
+
+  d.people = Array.isArray(d.people) ? d.people : []
+  // categories
+  if (Array.isArray(d.categories)) {
+    if (d.categories.length && typeof d.categories[0] === "string") {
+      d.categories = d.categories.map((name, idx) => {
+        const id = hashId("cat:"+name)
+        return { id, name, color: colorForId(id), order: idx }
+      })
+    } else {
+      // normaliza cores e orders
+      d.categories = d.categories.map((c, idx) => ({
+        id: c.id || hashId("cat_old:"+c.name),
+        name: c.name,
+        color: c.color || colorForId(c.id || hashId("cat_old:"+c.name)),
+        parentId: c.parentId || null,
+        order: typeof c.order === "number" ? c.order : idx
+      }))
+    }
+  } else {
+    d.categories = []
   }
+
+  d.projects = Array.isArray(d.projects) ? d.projects : []
+  // cria 1 projeto default se não houver
+  if (d.projects.length === 0) {
+    const pid = hashId("proj:default")
+    d.projects.push({
+      id: pid, name: "Projeto", start: null, end: null, status: "open",
+      owner: currentUserEmail || null, members: []
+    })
+  } else {
+    d.projects = d.projects.map(p => ({
+      ...p,
+      owner: p.owner || currentUserEmail || null,
+      members: Array.isArray(p.members) ? p.members : []
+    }))
+  }
+
+  d.expenses = Array.isArray(d.expenses) ? d.expenses : []
+  d.createdAt = d.createdAt || nowISO()
+  d.updatedAt = nowISO()
+  return d
 }
 
-/**
- * Migra documentos antigos (sem "projects" e/ou sem "projectId" nas despesas)
- * - Se não houver projects, cria um "Geral"
- * - Qualquer despesa sem projectId recebe o id do projeto padrão/aberto
- * - Garante createdAt/updatedAt
- */
-function migrateDocShape(doc) {
-  let migrated = false
+// Aplica patch restrito ao projeto ativo (para PUT)
+function applyPatch(oldDoc, patch, userEmail) {
+  const activeProjectId = patch?.activeProjectId
+  const project = (oldDoc.projects || []).find(p => p.id === activeProjectId)
+  if (!project) throw new Error("Projeto ativo não encontrado")
 
-  if (!doc || typeof doc !== "object") {
-    return { doc: makeDefaultDoc(), migrated: true }
+  // 1) MEMBERS: só owner pode alterar
+  if (Array.isArray(patch.members)) {
+    if (!canManageMembers(userEmail, project)) throw new Error("Sem permissão para gerenciar membros")
+    project.members = patch.members
   }
 
-  if (!Array.isArray(doc.people)) doc.people = []
-  if (!Array.isArray(doc.categories)) doc.categories = ["Mercado", "Carro", "Aluguel", "Lazer"]
-  if (!Array.isArray(doc.expenses)) doc.expenses = []
-
-  if (!Array.isArray(doc.projects) || doc.projects.length === 0) {
-    doc.projects = [makeDefaultProject()]
-    migrated = true
-  }
-
-  const openProject = doc.projects.find(p => p?.status === "open") || doc.projects[0]
-  const projectId = openProject?.id || makeDefaultProject().id
-
-  // Garante projectId nas despesas
-  for (const e of doc.expenses) {
-    if (!e.projectId) {
-      e.projectId = projectId
-      migrated = true
+  // 2) PROJECT fields (básicos): editor+
+  if (patch.projectUpdate) {
+    if (!canEditProject(userEmail, project)) throw new Error("Sem permissão para editar projeto")
+    const allowed = ["name","start","end","status"] // owner não é editável aqui
+    for (const k of allowed) {
+      if (k in patch.projectUpdate) project[k] = patch.projectUpdate[k]
     }
   }
 
-  if (!doc.createdAt) {
-    doc.createdAt = new Date().toISOString()
-    migrated = true
-  }
-  if (!doc.updatedAt) {
-    doc.updatedAt = new Date().toISOString()
-    migrated = true
+  // 3) CATEGORIES (globais): editor+
+  if (Array.isArray(patch.categories)) {
+    if (!canEditProject(userEmail, project)) throw new Error("Sem permissão para editar categorias")
+    // normaliza/ordena
+    oldDoc.categories = patch.categories.map((c, idx) => ({
+      id: c.id || hashId("cat:"+c.name),
+      name: c.name,
+      color: c.color || colorForId(c.id || hashId("cat:"+c.name)),
+      parentId: c.parentId || null,
+      order: typeof c.order === "number" ? c.order : idx
+    }))
   }
 
-  return { doc, migrated }
-}
-
-async function requireAuth(req) {
-  const token = await getToken({ req })
-  if (!token) {
-    return NextResponse.json({ error: "não autenticado" }, { status: 401 })
+  // 4) EXPENSES do projeto ativo: editor+
+  if (Array.isArray(patch.expenses)) {
+    if (!canEditProject(userEmail, project)) throw new Error("Sem permissão para editar despesas")
+    const others = (oldDoc.expenses || []).filter(e => e.projectId !== activeProjectId)
+    const sanitized = patch.expenses.map(e => ({
+      id: e.id || hashId("exp:"+Math.random().toString(36).slice(2)),
+      who: e.who, category: e.category, amount: Number(e.amount)||0,
+      desc: e.desc || "", date: e.date, projectId: activeProjectId
+    }))
+    oldDoc.expenses = [...others, ...sanitized]
   }
-  return null
+
+  oldDoc.updatedAt = nowISO()
+  return oldDoc
 }
 
 export async function GET(req, { params }) {
-  const slug = decodeURIComponent(params?.slug || "").trim()
-  if (!slug) return NextResponse.json({ error: "slug inválido" }, { status: 400 })
-
-  const authErr = await requireAuth(req)
-  if (authErr) return authErr
-
-  try {
-    const k = key(slug)
-    const raw = await redis.get(k)
-
-    if (!raw) {
-      // primeira vez: cria documento padrão com "projects"
-      const doc = makeDefaultDoc()
-      await redis.set(k, JSON.stringify(doc))
-      return NextResponse.json(doc, { status: 200 })
-    }
-
-    const parsed = JSON.parse(raw)
-    const { doc, migrated } = migrateDocShape(parsed)
-
-    if (migrated) {
-      // atualiza updatedAt e persiste migração
-      doc.updatedAt = new Date().toISOString()
-      await redis.set(k, JSON.stringify(doc))
-    }
-
-    return NextResponse.json(doc, { status: 200 })
-  } catch (e) {
-    return NextResponse.json({ error: "falha ao ler dados" }, { status: 500 })
+  const token = await getToken({ req })
+  const userEmail = token?.email || null
+  const { slug } = params
+  const raw = await redis.get(key(slug))
+  if (!raw) {
+    // cria doc vazio migrado
+    const base = migrateDocShape({}, userEmail)
+    await redis.set(key(slug), JSON.stringify(base))
+    return NextResponse.json(base)
   }
+  let doc = JSON.parse(raw || "{}")
+  doc = migrateDocShape(doc, userEmail)
+  // persiste migração se mudou
+  await redis.set(key(slug), JSON.stringify(doc))
+  return NextResponse.json(doc)
 }
 
 export async function PUT(req, { params }) {
-  const slug = decodeURIComponent(params?.slug || "").trim()
-  if (!slug) return NextResponse.json({ error: "slug inválido" }, { status: 400 })
+  const token = await getToken({ req })
+  if (!token?.email) return NextResponse.json({ error: "unauthorized" }, { status: 401 })
+  const userEmail = token.email
+  const { slug } = params
+  const patch = await req.json()
 
-  const authErr = await requireAuth(req)
-  if (authErr) return authErr
-
-  let body
-  try {
-    body = await req.json()
-  } catch {
-    return NextResponse.json({ error: "JSON inválido" }, { status: 400 })
-  }
-
-  // Validação mínima de tipos/arrays
-  if (!body || !Array.isArray(body.people) || !Array.isArray(body.categories) || !Array.isArray(body.expenses)) {
-    return NextResponse.json({ error: "formato inválido" }, { status: 400 })
-  }
-
-  // Projects é obrigatório a partir de agora (mas criamos se vier faltando)
-  if (!Array.isArray(body.projects) || body.projects.length === 0) {
-    body.projects = [makeDefaultProject()]
-  }
-
-  // Garante que toda despesa aponte para um projectId existente
-  const projectIds = new Set(body.projects.map(p => p?.id).filter(Boolean))
-  const openProject = body.projects.find(p => p?.status === "open") || body.projects[0]
-  const fallbackProjectId = openProject?.id
-
-  body.expenses = body.expenses.map(e => {
-    if (!e.projectId || !projectIds.has(e.projectId)) {
-      return { ...e, projectId: fallbackProjectId }
-    }
-    return e
-  })
-
-  // Atualiza timestamps
-  const now = new Date().toISOString()
-  const k = key(slug)
-
-  // Preserva createdAt se já existir
-  try {
-    const prevRaw = await redis.get(k)
-    if (prevRaw) {
-      const prev = JSON.parse(prevRaw)
-      if (prev?.createdAt && !body.createdAt) {
-        body.createdAt = prev.createdAt
-      }
-    }
-  } catch {
-    // ignora erro ao ler anterior
-  }
-
-  const docToSave = {
-    people: body.people,
-    categories: body.categories,
-    projects: body.projects,
-    expenses: body.expenses,
-    createdAt: body.createdAt || now,
-    updatedAt: now,
-  }
+  const raw = await redis.get(key(slug))
+  if (!raw) return NextResponse.json({ error: "not_found" }, { status: 404 })
+  let doc = migrateDocShape(JSON.parse(raw), userEmail)
 
   try {
-    await redis.set(k, JSON.stringify(docToSave))
-    return NextResponse.json({ ok: true, updatedAt: docToSave.updatedAt }, { status: 200 })
+    doc = applyPatch(structuredClone(doc), patch, userEmail)
   } catch (e) {
-    return NextResponse.json({ error: "falha ao salvar" }, { status: 500 })
+    return NextResponse.json({ error: e.message }, { status: 403 })
   }
+
+  await redis.set(key(slug), JSON.stringify(doc))
+  return NextResponse.json({ ok: true })
 }
