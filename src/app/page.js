@@ -1,28 +1,15 @@
 "use client"
-import { signIn, useSession } from "next-auth/react"
+
+export const dynamic = "force-dynamic"
+export const revalidate = 0
+
 import { useEffect } from "react"
 import { useRouter } from "next/navigation"
 
 export default function Home() {
-  const { status } = useSession()
   const router = useRouter()
-
-  // Se já estiver logado, vai direto para o /dashboard
   useEffect(() => {
-    if (status === "authenticated") {
-      router.replace("/dashboard")
-    }
-  }, [status, router])
-
-  return (
-    <main style={{display:"grid",placeItems:"center",height:"100vh",gap:16}}>
-      <h1 style={{fontSize:32}}>Gastos Família</h1>
-      <button
-        onClick={() => signIn("google", { callbackUrl: "/dashboard" })}
-        style={{padding:"12px 18px", borderRadius:10, border:"1px solid #999"}}
-      >
-        Entrar com Google
-      </button>
-    </main>
-  )
+    router.replace("/dashboard")
+  }, [router])
+  return <div className="p-6">Abrindo o dashboard…</div>
 }
