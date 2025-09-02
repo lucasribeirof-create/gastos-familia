@@ -1,6 +1,10 @@
-// src/app/dashboard/page.js
 "use client"
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import * as NextAuth from "next-auth/react"
+import { useRouter } from "next/navigation"
+import { carregarFamilia, salvarFamilia } from "../actions"
+
+// === Gráficos (recharts)
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
   LineChart, Line, XAxis, YAxis, CartesianGrid, Legend
@@ -14,7 +18,7 @@ const monthLabel = (yyyyMM) => (/^\d{4}-\d{2}$/.test(yyyyMM) ? `${yyyyMM.slice(5
 const todayYYYYMM = () => new Date().toISOString().slice(0,7)
 const firstDayOfMonth = (yyyyMM) => `${yyyyMM}-01`
 
-// ====== Cores para a Pizza (cores estáveis por categoria)
+// ====== Cores para Pizza (estáveis por nome de categoria)
 const PIE_COLORS = [
   "#6366F1", "#10B981", "#F59E0B", "#EF4444", "#3B82F6",
   "#8B5CF6", "#06B6D4", "#F43F5E", "#84CC16", "#F97316",
@@ -27,14 +31,34 @@ function colorFor(name = "") {
   return PIE_COLORS[idx]
 }
 
+/* ===================== Error Boundary (evita derrubar a página) ===================== */
+class ChartsErrorBoundary extends React.Component {
+  constructor(props){ super(props); this.state = { hasError: false } }
+  static getDerivedStateFromError(){ return { hasError: true } }
+  componentDidCatch(err, info){ console.error("Charts crashed:", err, info) }
+  render(){
+    if (this.state.hasError) {
+      return (
+        <div className="h-72 grid place-items-center text-sm text-red-600">
+          Erro ao renderizar os gráficos. Recarregue a página ou ajuste os filtros.
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 /* ===================== Page (proteção por login) ===================== */
 export default function Page() {
-  const { data: session, status } = useSession()
+  // Fallback defensivo caso algo quebre o hook
+  const sess = NextAuth?.useSession ? NextAuth.useSession() : { data: null, status: "unauthenticated" }
+  const { data: session, status } = sess
+
   const router = useRouter()
   useEffect(() => { if (status === "unauthenticated") router.replace("/") }, [status, router])
   if (status === "loading") return <div className="p-6">Carregando…</div>
   if (!session) return <div className="p-6">Faça login para continuar.</div>
-  return <GastosApp user={session.user} onSignOut={signOut} />
+  return <GastosApp user={session.user} onSignOut={NextAuth.signOut} />
 }
 
 /* ===================== App ===================== */
@@ -81,6 +105,8 @@ function GastosApp({ user, onSignOut }) {
 
   // ----- Gráficos -----
   const [chartType, setChartType] = useState("pie") // "pie" | "line"
+  const [isMounted, setIsMounted] = useState(false) // evita render antes do cliente montar
+  useEffect(() => { setIsMounted(true) }, [])
 
   /* ===================== Persistência / Save ===================== */
   const setDocAndSave = useCallback((next) => {
@@ -120,7 +146,6 @@ function GastosApp({ user, onSignOut }) {
   }, [slug])
 
   /* ===================== Load ===================== */
-  // Carrega por um slug específico e grava no localStorage para reabrir depois
   const loadBySlug = useCallback(async (slugToLoad) => {
     if (!slugToLoad) return
     setLoading(true); setError("")
@@ -161,13 +186,11 @@ function GastosApp({ user, onSignOut }) {
     }
   }, [])
 
-  // Mantém a API atual do botão "Usar"
   const loadFromCloud = useCallback(async () => {
     if (!slugInput) return
     await loadBySlug(slugInput)
   }, [slugInput, loadBySlug])
 
-  // Ao montar, reabre automaticamente a última família usada (se existir). Caso contrário, encerra o estado de loading.
   useEffect(() => {
     try {
       const saved = localStorage.getItem("family:slug")
@@ -264,7 +287,7 @@ function GastosApp({ user, onSignOut }) {
   function addExpense() {
     if (!selectedProject) { alert("Selecione/Crie um projeto."); return }
     const value = Number(String(amount).replace(",", "."))
-    if (!who || !category || !value || value <= 0 || !date) return
+    if (!who || !category || !Number.isFinite(value) || value <= 0 || !date) return
     const e = { id: "exp-" + Math.random().toString(36).slice(2), who, category, amount: value, desc: (desc || "").trim(), date, projectId: selectedProjectId }
     setDocAndSave(d => { d.expenses = [...d.expenses, e]; return d })
     setWho(""); setCategory(""); setAmount(""); setDesc("")
@@ -294,12 +317,15 @@ function GastosApp({ user, onSignOut }) {
     [monthlyExpenses, filterCat, filterWho]
   )
 
-  const total = useMemo(() => monthlyExpenses.reduce((s, e) => s + e.amount, 0), [monthlyExpenses])
+  const total = useMemo(() => monthlyExpenses.reduce((s, e) => s + (Number.isFinite(e.amount) ? e.amount : 0), 0), [monthlyExpenses])
 
   // Totais por pessoa no período mostrado (monthlyExpenses)
   const paidBy = useMemo(() => {
     const map = {}
-    for (const e of monthlyExpenses) map[e.who] = (map[e.who] || 0) + e.amount
+    for (const e of monthlyExpenses) {
+      const v = Number.isFinite(e.amount) ? e.amount : 0
+      map[e.who] = (map[e.who] || 0) + v
+    }
     return map
   }, [monthlyExpenses])
 
@@ -311,7 +337,10 @@ function GastosApp({ user, onSignOut }) {
   // Totais por categoria no período mostrado
   const totalsByCategory = useMemo(() => {
     const map = {}
-    for (const e of monthlyExpenses) map[e.category] = (map[e.category] || 0) + e.amount
+    for (const e of monthlyExpenses) {
+      const v = Number.isFinite(e.amount) ? e.amount : 0
+      map[e.category] = (map[e.category] || 0) + v
+    }
     return map
   }, [monthlyExpenses])
 
@@ -319,8 +348,9 @@ function GastosApp({ user, onSignOut }) {
   const groupedByCategory = useMemo(() => {
     const map = {}
     for (const e of filteredExpenses) {
+      const v = Number.isFinite(e.amount) ? e.amount : 0
       map[e.category] = map[e.category] || { total: 0, items: [] }
-      map[e.category].total += e.amount
+      map[e.category].total += v
       map[e.category].items.push(e)
     }
     return map
@@ -355,8 +385,14 @@ function GastosApp({ user, onSignOut }) {
   /* ===================== Dados dos GRÁFICOS ===================== */
   const pieData = useMemo(() => {
     const map = {}
-    for (const e of filteredExpenses) map[e.category] = (map[e.category] || 0) + e.amount
-    return Object.entries(map).map(([name, value]) => ({ name, value })).sort((a,b)=> b.value - a.value)
+    for (const e of filteredExpenses) {
+      const v = Number.isFinite(e.amount) ? e.amount : 0
+      map[e.category] = (map[e.category] || 0) + v
+    }
+    return Object.entries(map)
+      .map(([name, value]) => ({ name, value }))
+      .filter(d => Number.isFinite(d.value) && d.value > 0)
+      .sort((a,b)=> b.value - a.value)
   }, [filteredExpenses])
 
   const lineData = useMemo(() => {
@@ -364,10 +400,12 @@ function GastosApp({ user, onSignOut }) {
     for (const e of projectExpenses) {
       if (filterCat !== "Todos" && e.category !== filterCat) continue
       if (filterWho !== "Todos" && e.who !== filterWho) continue
+      const v = Number.isFinite(e.amount) ? e.amount : 0
       const m = monthKey(e.date)
-      map[m] = (map[m] || 0) + e.amount
+      map[m] = (map[m] || 0) + v
     }
     return Object.entries(map)
+      .filter(([m, v]) => m && Number.isFinite(v))
       .sort((a,b)=> a[0].localeCompare(b[0]))
       .map(([month, total]) => ({ month, total }))
   }, [projectExpenses, filterCat, filterWho])
@@ -393,9 +431,9 @@ function GastosApp({ user, onSignOut }) {
       </header>
 
       <div className="max-w-6xl mx-auto px-4 py-6">
-        {/* Projeto (esquerda) + Família (direita) */}
+        {/* Projeto + Família */}
         <section className="grid lg:grid-cols-2 gap-4 mb-4">
-          {/* Projeto — esquerda (todos botões dentro do box) */}
+          {/* Projeto */}
           <div className="bg-white rounded-2xl shadow p-4">
             <h2 className="font-semibold mb-3">Projeto</h2>
             <div className="flex flex-col gap-3">
@@ -456,7 +494,7 @@ function GastosApp({ user, onSignOut }) {
             </div>
           </div>
 
-          {/* Família — direita */}
+          {/* Família */}
           <div className="bg-white rounded-2xl shadow p-4">
             <h2 className="font-semibold mb-3">Família</h2>
             <div className="flex flex-wrap items-end gap-2">
@@ -471,7 +509,7 @@ function GastosApp({ user, onSignOut }) {
           </div>
         </section>
 
-        {/* Período (mês ou Total) */}
+        {/* Período */}
         <section className="bg-white rounded-2xl shadow p-4">
           <h2 className="font-semibold mb-3">Período — {selectedProject?.name || "—"}</h2>
           <div className="flex flex-wrap gap-2">
@@ -487,7 +525,7 @@ function GastosApp({ user, onSignOut }) {
           </div>
         </section>
 
-        {/* Pessoas / Categorias / Filtros (chips/toggles) */}
+        {/* Pessoas / Categorias / Filtro */}
         <section className="grid lg:grid-cols-3 gap-4 mt-4">
           <div className="bg-white rounded-2xl shadow p-4">
             <h2 className="font-semibold mb-3">Pessoas</h2>
@@ -497,8 +535,6 @@ function GastosApp({ user, onSignOut }) {
             <h2 className="font-semibold mb-3">Categorias</h2>
             <TagEditor items={categories} onAdd={addCategory} onRemove={removeCategory} placeholder="Adicionar categoria" />
           </div>
-
-          {/* Filtro com toggles para Categoria e Pessoa */}
           <div className="bg-white rounded-2xl shadow p-4">
             <h2 className="font-semibold mb-3">Filtro</h2>
 
@@ -562,7 +598,7 @@ function GastosApp({ user, onSignOut }) {
           </div>
         </section>
 
-        {/* Lista (agrupada) + Resumos */}
+        {/* Lista + Resumos */}
         <section className="grid lg:grid-cols-3 gap-4 mt-4">
           {/* Esquerda: despesas agrupadas por categoria */}
           <div className="lg:col-span-2 bg-white rounded-2xl shadow p-4">
@@ -574,7 +610,6 @@ function GastosApp({ user, onSignOut }) {
               </h2>
               <div className="flex items-center gap-3">
                 <div className="text-sm text-slate-500">Total: {currency(total)}</div>
-                {/* Toggle único de ordenação no topo */}
                 <button
                   onClick={()=>setSortOrder(prev => prev==="desc" ? "asc" : "desc")}
                   className="text-xs px-2 py-1 rounded border"
@@ -687,7 +722,7 @@ function GastosApp({ user, onSignOut }) {
           </div>
         </section>
 
-        {/* ===================== Painel: GRÁFICOS (com seletor) ===================== */}
+        {/* ===================== Painel: GRÁFICOS ===================== */}
         <section className="bg-white rounded-2xl shadow p-4 mt-4">
           <div className="flex items-center justify-between gap-2 mb-2">
             <h2 className="font-semibold">Gráficos — {selectedProject?.name || "—"}</h2>
@@ -716,30 +751,46 @@ function GastosApp({ user, onSignOut }) {
             }
           </div>
 
-          <div className="h-72 w-full">
-            <ResponsiveContainer>
-              {chartType === "pie" ? (
-                <PieChart>
-  <Tooltip formatter={(val)=>currency(Number(val))} />
-  <Legend />
-  <Pie data={pieData} dataKey="value" nameKey="name" outerRadius={100} label>
-    {pieData.map((entry) => (
-      <Cell key={`cell-${entry.name}`} fill={colorFor(entry.name)} />
-    ))}
-  </Pie>
-</PieChart>
+          <ChartsErrorBoundary>
+            {!isMounted ? (
+              <div className="h-72 grid place-items-center text-sm text-slate-500">Carregando gráfico…</div>
+            ) : chartType === "pie" ? (
+              pieData.length === 0 ? (
+                <div className="h-72 grid place-items-center text-sm text-slate-500">Sem dados para o gráfico de pizza.</div>
               ) : (
-                <LineChart data={lineData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="month" />
-                  <YAxis />
-                  <Tooltip formatter={(val)=>currency(Number(val))} />
-                  <Legend />
-                  <Line type="monotone" dataKey="total" />
-                </LineChart>
-              )}
-            </ResponsiveContainer>
-          </div>
+                <div className="h-72 w-full">
+                  <ResponsiveContainer>
+                    <PieChart>
+                      <Tooltip formatter={(val)=>currency(Number(val))} />
+                      <Legend />
+                      <Pie data={pieData} dataKey="value" nameKey="name" outerRadius={100} label>
+                        {pieData.map((entry) => (
+                          <Cell key={`cell-${entry.name}`} fill={colorFor(entry.name)} />
+                        ))}
+                      </Pie>
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              )
+            ) : (
+              lineData.length === 0 ? (
+                <div className="h-72 grid place-items-center text-sm text-slate-500">Sem dados para o gráfico de linha.</div>
+              ) : (
+                <div className="h-72 w-full">
+                  <ResponsiveContainer>
+                    <LineChart data={lineData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="month" />
+                      <YAxis />
+                      <Tooltip formatter={(val)=>currency(Number(val))} />
+                      <Legend />
+                      <Line type="monotone" dataKey="total" />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )
+            )}
+          </ChartsErrorBoundary>
         </section>
 
         <footer className="text-center text-xs text-slate-500 pt-6">
