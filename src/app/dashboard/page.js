@@ -4,7 +4,6 @@ import * as NextAuth from "next-auth/react"
 import { useRouter } from "next/navigation"
 import { carregarFamilia, salvarFamilia } from "../actions"
 
-// === Gráficos (recharts)
 import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
   LineChart, Line, XAxis, YAxis, CartesianGrid, Legend
@@ -41,10 +40,9 @@ export default function Page() {
   const { data: session, status } = sess
   const router = useRouter()
 
-  // ---- Tema (fix: aplicar classe 'dark' corretamente) ----
+  // ---- Tema ----
   const [theme, setTheme] = useState("dark")
   useEffect(() => {
-    // prioriza o que estava salvo; se não houver, usa preferência do SO
     const saved = localStorage.getItem("theme")
     const prefersDark = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
     const initial = saved || (prefersDark ? "dark" : "light")
@@ -71,7 +69,7 @@ export default function Page() {
 
   // ----- Documento (nuvem) -----
   const [people, setPeople] = useState([])
-  const [categories, setCategories] = useState(["Mercado", "Carro", "Aluguel", "Lazer"])  // strings
+  const [categories, setCategories] = useState(["Mercado", "Carro", "Aluguel", "Lazer"])
   const [projects, setProjects] = useState([]) // {id,name,type,start,end,status}
   const [expenses, setExpenses] = useState([]) // {id, who, category(name), amount, desc, date, projectId}
 
@@ -288,7 +286,7 @@ export default function Page() {
     return ["ALL", ...arr]
   }, [projectExpenses])
 
-  // filtro principal (período/pessoa/categoria)
+  // filtro principal
   const filtered = useMemo(() => {
     return projectExpenses
       .filter(e => (period === "ALL" ? true : monthKey(e.date) === period))
@@ -303,12 +301,11 @@ export default function Page() {
   // agrupado por categoria (para o modo "cat")
   const groupedByCategory = useMemo(() => {
     const map = new Map()
-    filteredDateAsc.forEach(e => { // dentro de cada categoria, por data asc
+    filteredDateAsc.forEach(e => {
       const arr = map.get(e.category) || []
       arr.push(e)
       map.set(e.category, arr)
     })
-    // ordena categorias pelo nome
     return [...map.entries()].sort((a,b)=> String(a[0]).localeCompare(String(b[0])))
   }, [filteredDateAsc])
 
@@ -326,7 +323,6 @@ export default function Page() {
     return [...m.entries()].map(([name, value]) => ({ name, value })).sort((a,b)=>b.value-a.value)
   }, [filtered])
 
-  // “acertos” (rateio) simples
   const settlements = useMemo(() => {
     const peopleSet = new Set(filtered.map(e => e.who))
     const arr = [...peopleSet]
@@ -334,10 +330,8 @@ export default function Page() {
     const paid = Object.fromEntries(arr.map(p => [p, 0]))
     filtered.forEach(e => paid[e.who] += (e.amount||0))
     const delta = arr.map(p => ({ person: p, diff: paid[p] - share }))
-
     const receivers = delta.filter(d => d.diff > 0).sort((a,b)=>b.diff-a.diff)
     const payers = delta.filter(d => d.diff < 0).sort((a,b)=>a.diff-b.diff)
-
     const ops = []
     let i=0, j=0
     while (i<receivers.length && j<payers.length) {
@@ -351,7 +345,6 @@ export default function Page() {
     return { delta, ops }
   }, [filtered, total])
 
-  // séries mensais para linhas
   const monthlySeries = useMemo(() => {
     const map = new Map()
     projectExpenses.forEach(e => {
@@ -366,85 +359,91 @@ export default function Page() {
     return arr
   }, [projectExpenses])
 
-  /* ===================== UI (na ordem solicitada) ===================== */
+  /* ===================== UI (ordem mantida) ===================== */
   if (status !== "authenticated") return <div className="p-6">Redirecionando para login…</div>
+
+  // util tailwind de cartão “chanfrado”
+  const card = "rounded-2xl border border-slate-200/60 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm"
 
   return (
     <div className="p-4 sm:p-6 max-w-6xl mx-auto text-sm text-slate-900 dark:text-slate-100">
-      {/* Header / Ações rápidas */}
+      {/* Header */}
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold">Gastos em Família</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Gastos em Família</h1>
           <p className="text-xs opacity-70">Projeto: <b>{selectedProject?.name || "—"}</b></p>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={toggleTheme} className="px-3 py-1 rounded border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800">
+          <button onClick={toggleTheme} className="px-3 py-1.5 rounded-full border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">
             Tema: {theme==="dark"?"Escuro":"Claro"}
           </button>
-          <button onClick={()=> NextAuth.signOut({ callbackUrl: "/" })} className="px-3 py-1 rounded border">Sair</button>
+          <button onClick={()=> NextAuth.signOut({ callbackUrl: "/" })} className="px-3 py-1.5 rounded-full border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800">Sair</button>
         </div>
       </div>
 
-      {/* 1) PROJETO (topo) */}
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        <label className="text-xs">Projeto:</label>
-        <select className="px-2 py-1 rounded border dark:bg-slate-900" value={selectedProjectId} onChange={e=>{
-          setSelectedProjectId(e.target.value)
-          localStorage.setItem(`project:${slug}`, e.target.value)
-        }}>
-          {projects.map(p => <option key={p.id} value={p.id}>{p.name} {p.status==="closed"?"(fechado)":""}</option>)}
-        </select>
-        <button className="px-3 py-1 rounded bg-blue-600 text-white" onClick={openNewProject}>Novo</button>
-        {selectedProject && selectedProject.status==="open" && <button className="px-3 py-1 rounded border" onClick={()=>closeProject(selectedProject.id)}>Fechar</button>}
-        {selectedProject && selectedProject.status==="closed" && <button className="px-3 py-1 rounded border" onClick={()=>reopenProject(selectedProject.id)}>Reabrir</button>}
-        {selectedProject && <button className="px-3 py-1 rounded border border-red-600 text-red-600" onClick={()=>removeProject(selectedProject.id)}>Excluir</button>}
-      </div>
-
-      {/* Criar Projeto */}
-      {showNewProject && (
-        <div className="mt-3 p-3 rounded-lg border dark:border-slate-700">
-          <div className="grid sm:grid-cols-2 gap-2">
-            <div>
-              <label className="text-xs block mb-1">Tipo</label>
-              <select className="px-2 py-1 rounded border dark:bg-slate-900 w-full" value={newProjectType} onChange={e=>setNewProjectType(e.target.value)}>
-                <option value="monthly">Mensal</option>
-                <option value="trip">Viagem</option>
-                <option value="custom">Custom</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-xs block mb-1">Nome</label>
-              <input className="px-2 py-1 rounded border dark:bg-slate-900 w-full" value={newProjectName} onChange={e=>setNewProjectName(e.target.value)} placeholder="Ex.: Maio/2025, Floripa, Reforma…" />
-            </div>
-            <div>
-              <label className="text-xs block mb-1">Início</label>
-              <input type="date" className="px-2 py-1 rounded border dark:bg-slate-900 w-full" value={newProjectStart} onChange={e=>setNewProjectStart(e.target.value)} />
-            </div>
-            <div>
-              <label className="text-xs block mb-1">Fim (opcional)</label>
-              <input type="date" className="px-2 py-1 rounded border dark:bg-slate-900 w-full" value={newProjectEnd} onChange={e=>setNewProjectEnd(e.target.value)} />
-            </div>
-          </div>
-          <div className="mt-2 flex gap-2 justify-end">
-            <button className="px-3 py-1 rounded border" onClick={()=>setShowNewProject(false)}>Cancelar</button>
-            <button className="px-3 py-1 rounded bg-emerald-600 text-white" onClick={createProject}>Criar</button>
+      {/* 1) PROJETO */}
+      <div className={`mt-4 p-3 ${card}`}>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="text-xs">Projeto:</label>
+          <select className="px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 dark:bg-slate-900" value={selectedProjectId} onChange={e=>{
+            setSelectedProjectId(e.target.value)
+            localStorage.setItem(`project:${slug}`, e.target.value)
+          }}>
+            {projects.map(p => <option key={p.id} value={p.id}>{p.name} {p.status==="closed"?"(fechado)":""}</option>)}
+          </select>
+          <div className="flex gap-2 ml-auto">
+            <button className="px-3 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700" onClick={openNewProject}>Novo</button>
+            {selectedProject && selectedProject.status==="open" && <button className="px-3 py-2 rounded-xl border" onClick={()=>closeProject(selectedProject.id)}>Fechar</button>}
+            {selectedProject && selectedProject.status==="closed" && <button className="px-3 py-2 rounded-xl border" onClick={()=>reopenProject(selectedProject.id)}>Reabrir</button>}
+            {selectedProject && <button className="px-3 py-2 rounded-xl border border-red-600 text-red-600" onClick={()=>removeProject(selectedProject.id)}>Excluir</button>}
           </div>
         </div>
-      )}
+
+        {showNewProject && (
+          <div className="mt-3 p-3 rounded-xl border border-slate-200 dark:border-slate-800">
+            <div className="grid sm:grid-cols-2 gap-2">
+              <div>
+                <label className="text-xs block mb-1">Tipo</label>
+                <select className="px-3 py-2 rounded-xl border dark:bg-slate-900 w-full" value={newProjectType} onChange={e=>setNewProjectType(e.target.value)}>
+                  <option value="monthly">Mensal</option>
+                  <option value="trip">Viagem</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs block mb-1">Nome</label>
+                <input className="px-3 py-2 rounded-xl border dark:bg-slate-900 w-full" value={newProjectName} onChange={e=>setNewProjectName(e.target.value)} placeholder="Ex.: Maio/2025, Floripa, Reforma…" />
+              </div>
+              <div>
+                <label className="text-xs block mb-1">Início</label>
+                <input type="date" className="px-3 py-2 rounded-xl border dark:bg-slate-900 w-full" value={newProjectStart} onChange={e=>setNewProjectStart(e.target.value)} />
+              </div>
+              <div>
+                <label className="text-xs block mb-1">Fim (opcional)</label>
+                <input type="date" className="px-3 py-2 rounded-xl border dark:bg-slate-900 w-full" value={newProjectEnd} onChange={e=>setNewProjectEnd(e.target.value)} />
+              </div>
+            </div>
+            <div className="mt-3 flex gap-2 justify-end">
+              <button className="px-3 py-2 rounded-xl border" onClick={()=>setShowNewProject(false)}>Cancelar</button>
+              <button className="px-3 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700" onClick={createProject}>Criar</button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* 2) PESSOAS - CATEGORIAS */}
-      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-2">
-        <div className="rounded border dark:border-slate-700 p-2">
-          <h3 className="font-semibold mb-2">Pessoas</h3>
+      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className={`p-3 ${card}`}>
+          <h3 className="font-semibold mb-2">1) Pessoas do grupo</h3>
           <div className="flex gap-2">
-            <input id="newPerson" className="px-2 py-1 rounded border dark:bg-slate-900 flex-1" placeholder="Nome…" />
-            <button className="px-3 py-1 rounded bg-slate-700 text-white" onClick={()=>{
+            <input id="newPerson" className="px-3 py-2 rounded-xl border dark:bg-slate-900 flex-1" placeholder="Nome (ex.: Ana)" />
+            <button className="px-4 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700" onClick={()=>{
               const el = document.getElementById("newPerson"); const v = (el?.value||"").trim(); if (v) addPerson(v); if (el) el.value=""
             }}>Adicionar</button>
           </div>
-          <div className="mt-2 flex flex-wrap gap-2">
+          <div className="mt-3 flex flex-wrap gap-2">
             {people.map(p => (
-              <span key={p} className="inline-flex items-center gap-2 px-2 py-1 rounded border dark:border-slate-700">
+              <span key={p} className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border dark:border-slate-700">
                 {p}
                 <button className="text-xs text-red-600" onClick={()=>removePerson(p)}>remover</button>
               </span>
@@ -452,17 +451,19 @@ export default function Page() {
           </div>
         </div>
 
-        <div className="rounded border dark:border-slate-700 p-2">
-          <h3 className="font-semibold mb-2">Categorias</h3>
+        <div className={`p-3 ${card}`}>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-semibold">2) Categorias</h3>
+          </div>
           <div className="flex gap-2">
-            <input id="newCat" className="px-2 py-1 rounded border dark:bg-slate-900 flex-1" placeholder="Categoria…" />
-            <button className="px-3 py-1 rounded bg-slate-700 text-white" onClick={()=>{
+            <input id="newCat" className="px-3 py-2 rounded-xl border dark:bg-slate-900 flex-1" placeholder="Nova categoria (ex.: Remédios)" />
+            <button className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700" onClick={()=>{
               const el = document.getElementById("newCat"); const v = (el?.value||"").trim(); if (v) addCategoryLocal(v); if (el) el.value=""
             }}>Adicionar</button>
           </div>
-          <div className="mt-2 flex flex-wrap gap-2">
+          <div className="mt-3 flex flex-wrap gap-2">
             {categories.map(c => (
-              <span key={c} className="inline-flex items-center gap-2 px-2 py-1 rounded border dark:border-slate-700">
+              <span key={c} className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border dark:border-slate-700">
                 {c}
                 <button className="text-xs text-red-600" onClick={()=>removeCategory(c)}>remover</button>
               </span>
@@ -472,87 +473,92 @@ export default function Page() {
       </div>
 
       {/* 3) ADIÇÃO DE GASTOS */}
-      <div className="mt-4 grid grid-cols-1 md:grid-cols-6 gap-2">
-        <input aria-label="Data" disabled={readOnly} className="px-2 py-2 rounded border dark:bg-slate-900" type="date" value={date} onChange={e=>setDate(e.target.value)} />
-        <select aria-label="Pessoa" disabled={readOnly} className="px-2 py-2 rounded border dark:bg-slate-900" value={who} onChange={e=>setWho(e.target.value)}>
-          <option value="">Quem pagou?</option>
-          {people.map(p => <option key={p} value={p}>{p}</option>)}
-        </select>
-        <select aria-label="Categoria" disabled={readOnly} className="px-2 py-2 rounded border dark:bg-slate-900" value={category} onChange={e=>setCategory(e.target.value)}>
-          <option value="">Categoria</option>
-          {categories.map(c => <option key={c} value={c}>{c}</option>)}
-        </select>
-        <input aria-label="Descrição" disabled={readOnly} className="px-2 py-2 rounded border dark:bg-slate-900 md:col-span-2" placeholder="Descrição" value={desc} onChange={e=>setDesc(e.target.value)} onKeyDown={(e)=>{ if(e.key==="Enter"){ e.preventDefault(); addExpense() }}} />
-        <input aria-label="Valor" disabled={readOnly} className="px-2 py-2 rounded border dark:bg-slate-900" placeholder="0,00" value={amount} onChange={e=>setAmount(e.target.value)} onKeyDown={(e)=>{ if(e.key==="Enter"){ e.preventDefault(); addExpense() }}} />
-        <div className="md:col-span-6 flex justify-end">
-          <button disabled={readOnly} onClick={addExpense} className="px-3 py-2 rounded bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50">Adicionar</button>
+      <div className={`mt-4 p-3 ${card}`}>
+        <h3 className="font-semibold mb-3">3) <span className="text-slate-700 dark:text-slate-300">Adicionar gasto</span></h3>
+        <div className="grid grid-cols-1 md:grid-cols-6 gap-2">
+          <input aria-label="Data" disabled={readOnly} className="px-3 py-2 rounded-xl border dark:bg-slate-900" type="date" value={date} onChange={e=>setDate(e.target.value)} />
+          <select aria-label="Pessoa" disabled={readOnly} className="px-3 py-2 rounded-xl border dark:bg-slate-900" value={who} onChange={e=>setWho(e.target.value)}>
+            <option value="">Quem pagou?</option>
+            {people.map(p => <option key={p} value={p}>{p}</option>)}
+          </select>
+          <select aria-label="Categoria" disabled={readOnly} className="px-3 py-2 rounded-xl border dark:bg-slate-900" value={category} onChange={e=>setCategory(e.target.value)}>
+            <option value="">Categoria</option>
+            {categories.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <input aria-label="Descrição" disabled={readOnly} className="px-3 py-2 rounded-xl border dark:bg-slate-900 md:col-span-2" placeholder="Descrição" value={desc} onChange={e=>setDesc(e.target.value)} onKeyDown={(e)=>{ if(e.key==="Enter"){ e.preventDefault(); addExpense() }}} />
+          <div className="flex gap-2">
+            <input aria-label="Valor" disabled={readOnly} className="px-3 py-2 rounded-xl border dark:bg-slate-900 w-full" placeholder="0,00" value={amount} onChange={e=>setAmount(e.target.value)} onKeyDown={(e)=>{ if(e.key==="Enter"){ e.preventDefault(); addExpense() }}} />
+            <button disabled={readOnly} onClick={addExpense} className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white whitespace-nowrap">Lançar</button>
+          </div>
         </div>
       </div>
 
       {/* 4) TÍTULO "DESPESAS" */}
       <div className="mt-6">
-        <h2 className="font-semibold">Despesas</h2>
+        <h2 className="font-semibold text-lg">Despesas</h2>
       </div>
 
-      {/* 5) FILTROS (período, pessoa, categoria) + ORDEM */}
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        <label className="text-xs">Período:</label>
-        <div className="flex items-center gap-1">
-          {months.map(m => (
-            <button key={m} className={`px-2 py-1 rounded border ${period===m?"bg-slate-200 dark:bg-slate-800":""}`} onClick={()=>setPeriod(m)}>
-              {m==="ALL" ? "Total" : monthLabel(m)}
-            </button>
-          ))}
+      {/* 5) FILTROS + ORDEM */}
+      <div className={`mt-2 p-3 ${card}`}>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="text-xs">Período:</label>
+          <div className="flex flex-wrap items-center gap-1">
+            {months.map(m => (
+              <button key={m} className={`px-3 py-1.5 rounded-full border transition ${period===m?"bg-slate-100 dark:bg-slate-800":""}`} onClick={()=>setPeriod(m)}>
+                {m==="ALL" ? "Total" : monthLabel(m)}
+              </button>
+            ))}
+          </div>
+          <div className="h-4 w-px bg-slate-300 dark:bg-slate-700 mx-1" />
+          <label className="text-xs">Pessoa:</label>
+          <select className="px-3 py-2 rounded-xl border dark:bg-slate-900" value={onlyPerson} onChange={e=>setOnlyPerson(e.target.value)}>
+            <option value="">Todas</option>
+            {people.map(p => <option key={p} value={p}>{p}</option>)}
+          </select>
+          <label className="text-xs">Categoria:</label>
+          <select className="px-3 py-2 rounded-xl border dark:bg-slate-900" value={onlyCategory} onChange={e=>setOnlyCategory(e.target.value)}>
+            <option value="">Todas</option>
+            {categories.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <div className="h-4 w-px bg-slate-300 dark:bg-slate-700 mx-1" />
+          <label className="text-xs">Ordenação:</label>
+          <select className="px-3 py-2 rounded-xl border dark:bg-slate-900" value={orderMode} onChange={e=>setOrderMode(e.target.value)}>
+            <option value="cat">Por categoria (agrupado)</option>
+            <option value="date_desc">Data ↓ (recente primeiro)</option>
+            <option value="date_asc">Data ↑ (antigo primeiro)</option>
+          </select>
+          <div className="ml-auto text-sm font-medium">Total do período: {currency(total)}</div>
         </div>
-        <div className="h-4 w-px bg-slate-300 dark:bg-slate-700 mx-1" />
-        <label className="text-xs">Pessoa:</label>
-        <select className="px-2 py-1 rounded border dark:bg-slate-900" value={onlyPerson} onChange={e=>setOnlyPerson(e.target.value)}>
-          <option value="">Todas</option>
-          {people.map(p => <option key={p} value={p}>{p}</option>)}
-        </select>
-        <label className="text-xs">Categoria:</label>
-        <select className="px-2 py-1 rounded border dark:bg-slate-900" value={onlyCategory} onChange={e=>setOnlyCategory(e.target.value)}>
-          <option value="">Todas</option>
-          {categories.map(c => <option key={c} value={c}>{c}</option>)}
-        </select>
-        <div className="h-4 w-px bg-slate-300 dark:bg-slate-700 mx-1" />
-        <label className="text-xs">Ordenação:</label>
-        <select className="px-2 py-1 rounded border dark:bg-slate-900" value={orderMode} onChange={e=>setOrderMode(e.target.value)}>
-          <option value="cat">Por categoria (agrupado)</option>
-          <option value="date_desc">Data ↓ (recente primeiro)</option>
-          <option value="date_asc">Data ↑ (antigo primeiro)</option>
-        </select>
       </div>
 
-      {/* 6) GASTOS EFETIVOS (lista) */}
+      {/* 6) GASTOS EFETIVOS */}
       <div className="mt-3">
         {orderMode === "cat" ? (
-          // AGRUPADO POR CATEGORIA
           <div className="space-y-4">
             {groupedByCategory.map(([catName, arr]) => (
-              <div key={catName} className="rounded border dark:border-slate-700">
-                <div className="px-3 py-2 font-semibold bg-slate-50 dark:bg-slate-900/50 border-b dark:border-slate-700">
+              <div key={catName} className={`${card}`}>
+                <div className="px-4 py-2 font-semibold bg-slate-50 dark:bg-slate-900/50 rounded-t-2xl border-b border-slate-200 dark:border-slate-800">
                   {catName} — {currency(arr.reduce((s, e)=>s+(e.amount||0), 0))}
                 </div>
                 <div className="overflow-x-auto">
                   <table className="min-w-full text-sm">
                     <thead>
-                      <tr className="text-left border-b dark:border-slate-700">
-                        <th className="py-2 pr-2">Data</th>
+                      <tr className="text-left border-b dark:border-slate-800">
+                        <th className="py-2 pr-2 pl-4">Data</th>
                         <th className="py-2 pr-2">Pessoa</th>
                         <th className="py-2 pr-2">Descrição</th>
-                        <th className="py-2 pr-2 text-right">Valor</th>
+                        <th className="py-2 pr-4 text-right">Valor</th>
                         <th className="py-2 pr-2"></th>
                       </tr>
                     </thead>
                     <tbody>
                       {arr.map(e => (
-                        <tr key={e.id} className="border-b dark:border-slate-800">
-                          <td className="py-1 pr-2">{e.date}</td>
-                          <td className="py-1 pr-2">{e.who}</td>
-                          <td className="py-1 pr-2">{e.desc}</td>
-                          <td className="py-1 pr-2 text-right">{currency(e.amount)}</td>
-                          <td className="py-1 pr-2 text-right">
+                        <tr key={e.id} className="border-b dark:border-slate-900">
+                          <td className="py-2 pr-2 pl-4">{e.date}</td>
+                          <td className="py-2 pr-2">{e.who}</td>
+                          <td className="py-2 pr-2">{e.desc}</td>
+                          <td className="py-2 pr-4 text-right">{currency(e.amount)}</td>
+                          <td className="py-2 pr-2 text-right">
                             <button className="text-xs text-red-600" onClick={()=>removeExpense(e.id)}>remover</button>
                           </td>
                         </tr>
@@ -567,28 +573,27 @@ export default function Page() {
             )}
           </div>
         ) : (
-          // LISTA PLANA POR DATA
-          <div className="overflow-x-auto">
+          <div className={`${card} overflow-x-auto`}>
             <table className="min-w-full text-sm">
               <thead>
-                <tr className="text-left border-b dark:border-slate-700">
-                  <th className="py-2 pr-2">Data</th>
+                <tr className="text-left border-b dark:border-slate-800">
+                  <th className="py-2 pr-2 pl-4">Data</th>
                   <th className="py-2 pr-2">Pessoa</th>
                   <th className="py-2 pr-2">Categoria</th>
                   <th className="py-2 pr-2">Descrição</th>
-                  <th className="py-2 pr-2 text-right">Valor</th>
+                  <th className="py-2 pr-4 text-right">Valor</th>
                   <th className="py-2 pr-2"></th>
                 </tr>
               </thead>
               <tbody>
                 {(orderMode==="date_desc" ? filteredDateDesc : filteredDateAsc).map(e => (
-                  <tr key={e.id} className="border-b dark:border-slate-800">
-                    <td className="py-1 pr-2">{e.date}</td>
-                    <td className="py-1 pr-2">{e.who}</td>
-                    <td className="py-1 pr-2">{e.category}</td>
-                    <td className="py-1 pr-2">{e.desc}</td>
-                    <td className="py-1 pr-2 text-right">{currency(e.amount)}</td>
-                    <td className="py-1 pr-2 text-right">
+                  <tr key={e.id} className="border-b dark:border-slate-900">
+                    <td className="py-2 pr-2 pl-4">{e.date}</td>
+                    <td className="py-2 pr-2">{e.who}</td>
+                    <td className="py-2 pr-2">{e.category}</td>
+                    <td className="py-2 pr-2">{e.desc}</td>
+                    <td className="py-2 pr-4 text-right">{currency(e.amount)}</td>
+                    <td className="py-2 pr-2 text-right">
                       <button className="text-xs text-red-600" onClick={()=>removeExpense(e.id)}>remover</button>
                     </td>
                   </tr>
@@ -596,28 +601,27 @@ export default function Page() {
               </tbody>
             </table>
             {filtered.length === 0 && (
-              <div className="text-xs opacity-70 mt-2">Sem despesas no filtro atual.</div>
+              <div className="text-xs opacity-70 p-3">Sem despesas no filtro atual.</div>
             )}
           </div>
         )}
-        <div className="mt-2 text-sm font-medium">Total do período: {currency(total)}</div>
       </div>
 
-      {/* 7) RESUMOS — Quem pagou quanto / Totais por categoria / Acertos */}
+      {/* 7) RESUMOS */}
       <div className="mt-6 grid md:grid-cols-3 gap-3">
-        <div className="rounded border dark:border-slate-700 p-3">
+        <div className={`p-3 ${card}`}>
           <h3 className="font-semibold mb-2">Quem pagou quanto</h3>
           <ul className="space-y-1">
             {byPerson.map(r => <li key={r.name} className="flex justify-between"><span>{r.name}</span><span>{currency(r.value)}</span></li>)}
           </ul>
         </div>
-        <div className="rounded border dark:border-slate-700 p-3">
+        <div className={`p-3 ${card}`}>
           <h3 className="font-semibold mb-2">Totais por categoria</h3>
           <ul className="space-y-1">
             {byCategory.map(r => <li key={r.name} className="flex justify-between"><span>{r.name}</span><span>{currency(r.value)}</span></li>)}
           </ul>
         </div>
-        <div className="rounded border dark:border-slate-700 p-3">
+        <div className={`p-3 ${card}`}>
           <h3 className="font-semibold mb-2">Acertos (rateio)</h3>
           {settlements.ops.length === 0 ? (
             <div className="text-xs opacity-70">Tudo certo, ninguém deve nada.</div>
@@ -631,13 +635,13 @@ export default function Page() {
         </div>
       </div>
 
-      {/* 8) GRÁFICO */}
-      <div className="mt-8">
+      {/* 8) GRÁFICOS */}
+      <div className={`mt-8 p-3 ${card}`}>
         <div className="flex items-center justify-between">
           <h3 className="font-semibold">Gráficos</h3>
           <div className="flex gap-2">
-            <button className={`px-3 py-1 rounded border ${chartType==="pizza"?"bg-slate-200 dark:bg-slate-800":""}`} onClick={()=>setChartType("pizza")}>Pizza</button>
-            <button className={`px-3 py-1 rounded border ${chartType==="linha"?"bg-slate-200 dark:bg-slate-800":""}`} onClick={()=>setChartType("linha")}>Linha (mensal)</button>
+            <button className={`px-3 py-1.5 rounded-full border ${chartType==="pizza"?"bg-slate-100 dark:bg-slate-800":""}`} onClick={()=>setChartType("pizza")}>Pizza</button>
+            <button className={`px-3 py-1.5 rounded-full border ${chartType==="linha"?"bg-slate-100 dark:bg-slate-800":""}`} onClick={()=>setChartType("linha")}>Linha (mensal)</button>
           </div>
         </div>
 
@@ -646,7 +650,7 @@ export default function Page() {
             <div className="h-72 w-full mt-2">
               <ResponsiveContainer>
                 <PieChart>
-                  <Pie dataKey="value" data={byCategory} cx="50%" cy="50%" outerRadius={100} label={(d)=>`${d.name}: ${currency(d.value)}`}>
+                  <Pie dataKey="value" data={byCategory} cx="50%" cy="50%" outerRadius={110} label={(d)=>`${d.name}: ${currency(d.value)}`}>
                     {byCategory.map((d, i) => <Cell key={i} fill={`hsl(${(i*67)%360} 70% 48%)`} />)}
                   </Pie>
                   <Tooltip formatter={(v, n)=>[currency(v), n]} />
@@ -672,7 +676,7 @@ export default function Page() {
         </ChartsErrorBoundary>
       </div>
 
-      {/* Rodapé: status de salvamento */}
+      {/* Rodapé */}
       <div className="mt-6 text-xs opacity-70">
         {saving ? "Salvando..." : (lastSavedAt ? `Salvo às ${fmtHora(lastSavedAt)}` : "")}
         {error && <span className="ml-2 text-red-600">{error}</span>}
