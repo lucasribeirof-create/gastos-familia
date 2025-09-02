@@ -698,7 +698,409 @@ function TagEditor({ items, onAdd, onRemove, placeholder }) {
             <li key={it} className="px-2 py-1 rounded-full border bg-slate-50 flex items-center gap-2">
               <span className="text-sm">{it}</span>
               <button className="text-xs text-red-700" onClick={()=>onRemove(it)}>×</button>
-            </li>
+            </li>// src/app/dashboard/page.js
+"use client"
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useSession, signOut } from "next-auth/react"
+import { useRouter } from "next/navigation"
+import { carregarFamilia, salvarFamilia } from "../actions"
+
+/* ===================== Helpers ===================== */
+const currency = (v) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
+const fmtHora = (iso) => { try { return new Date(iso).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"}) } catch { return "" } }
+const monthKey = (dateStr) => (dateStr ? String(dateStr).slice(0,7) : "")
+const monthLabel = (yyyyMM) => (/^\d{4}-\d{2}$/.test(yyyyMM) ? `${yyyyMM.slice(5,7)}/${yyyyMM.slice(0,4)}` : yyyyMM || "")
+const todayYYYYMM = () => new Date().toISOString().slice(0,7)
+const firstDayOfMonth = (yyyyMM) => `${yyyyMM}-01`
+
+/* ===================== Page (proteção por login) ===================== */
+export default function Page() {
+  const { data: session, status } = useSession()
+  const router = useRouter()
+  useEffect(() => {
+    if (status === "unauthenticated") router.replace("/")
+  }, [status, router])
+  if (status === "loading") return <div className="p-6">Carregando…</div>
+  if (!session) return <div className="p-6">Faça login para continuar.</div>
+  return <GastosApp user={session.user} onSignOut={signOut} />
+}
+
+/* ===================== App ===================== */
+function GastosApp({ user, onSignOut }) {
+  // ----- Família (slug) -----
+  const [slugInput, setSlugInput] = useState("")
+  const [slug, setSlug] = useState("")
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState("")
+  const [lastSavedAt, setLastSavedAt] = useState(null)
+
+  // ----- Documento (nuvem) -----
+  const [people, setPeople] = useState([])
+  const [categories, setCategories] = useState(["Mercado", "Carro", "Aluguel", "Lazer"])
+  const [projects, setProjects] = useState([]) // {id,name,type,start,end,status}
+  const [expenses, setExpenses] = useState([]) // { ..., projectId }
+
+  // ----- Projeto atual -----
+  const [selectedProjectId, setSelectedProjectId] = useState("")
+  const selectedProject = useMemo(() => projects.find(p => p.id === selectedProjectId) || null, [projects, selectedProjectId])
+  const isClosed = selectedProject?.status === "closed"
+  const readOnly = false // <— PROJETO FECHADO CONTINUA EDITÁVEL
+
+  // ----- Inputs de criação de projeto -----
+  const [showNewProject, setShowNewProject] = useState(false)
+  const [newProjectType, setNewProjectType] = useState("monthly") // monthly | trip | custom
+  const [newProjectName, setNewProjectName] = useState("")
+  const [newProjectStart, setNewProjectStart] = useState(firstDayOfMonth(todayYYYYMM()))
+  const [newProjectEnd, setNewProjectEnd] = useState("")
+
+  // ----- Inputs e filtros de despesas -----
+  const [who, setWho] = useState("")
+  const [category, setCategory] = useState("")
+  const [amount, setAmount] = useState("")
+  const [desc, setDesc] = useState("")
+  const [date, setDate] = useState(new Date().toISOString().slice(0,10))
+
+  const [selectedMonth, setSelectedMonth] = useState(todayYYYYMM())
+  const [filterCat, setFilterCat] = useState("Todos")
+  const [filterWho, setFilterWho] = useState("Todos")          // <<< NOVO: filtro por pessoa
+  const [sortOrder, setSortOrder] = useState("desc")           // <<< NOVO: "desc" | "asc"
+
+  /* ===================== Carregar documento ===================== */
+  const setDocAndSave = useCallback((next) => {
+    const doc = { people, categories, projects, expenses }
+    const merged = typeof next === "function" ? next(doc) : next
+    queueSave(merged)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [people, categories, projects, expenses, slug])
+
+  const queueSave = useCallback((next) => {
+    if (!slug) return
+    if (!next) return
+    setPeople(next.people); setCategories(next.categories); setProjects(next.projects); setExpenses(next.expenses)
+    _queueSave(next)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slug])
+
+  const saveTimer = useRef(null)
+  const _queueSave = useCallback((next) => {
+    if (!slug) return
+    if (saveTimer.current) clearTimeout(saveTimer.current)
+    saveTimer.current = setTimeout(async () => {
+      setSaving(true); setError("")
+      try {
+        const res = await salvarFamilia(slug, {
+          people: next.people,
+          categories: next.categories,
+          projects: next.projects,
+          expenses: next.expenses,
+        })
+        setLastSavedAt(res?.updatedAt || new Date().toISOString())
+      } catch(e) {
+        setError(String(e.message || e))
+      } finally {
+        setSaving(false)
+      }
+    }, 800)
+  }, [slug])
+
+  const loadFromCloud = useCallback(async () => {
+    if (!slugInput) return
+    setLoading(true); setError("")
+    try {
+      const data = await carregarFamilia(slugInput)
+      const doc = data || { people: [], categories: [], projects: [], expenses: [] }
+
+      // migração mínima: se não houver projetos, cria um mensal do mês atual
+      let nextProjects = Array.isArray(doc.projects) ? doc.projects : []
+      if (!nextProjects.length) {
+        nextProjects = [{
+          id: "proj-" + Math.random().toString(36).slice(2),
+          name: todayYYYYMM(),
+          type: "monthly",
+          start: firstDayOfMonth(todayYYYYMM()),
+          end: "",
+          status: "open"
+        }]
+      }
+
+      setPeople(Array.isArray(doc.people) ? doc.people : [])
+      setCategories(Array.isArray(doc.categories) ? doc.categories : [])
+      setProjects(nextProjects)
+      setExpenses(Array.isArray(doc.expenses) ? doc.expenses : [])
+
+      setSlug(slugInput)
+      localStorage.setItem("family:slug", slugInput)
+
+      // projeto selecionado
+      const localPid = localStorage.getItem(`project:${slugInput}`) || nextProjects[0]?.id || ""
+      setSelectedProjectId(localPid)
+      setSelectedMonth(todayYYYYMM())
+      setFilterCat("Todos")
+      setFilterWho("Todos")
+    } catch(e) {
+      setError(String(e.message || e))
+    } finally {
+      setLoading(false)
+    }
+  }, [slugInput])
+
+  /* ===================== Ações: Projeto ===================== */
+  function closeCurrentProject() {
+    if (!selectedProject) return
+    const ok = confirm(`Fechar o projeto "${selectedProject.name}"? O status ficará "fechado" e a data de término será marcada, mas você ainda poderá editar.`)
+    if (!ok) return
+    setDocAndSave(d => {
+      d.projects = d.projects.map(p => p.id === selectedProject.id ? { ...p, status: "closed", end: p.end || new Date().toISOString().slice(0,10) } : p)
+      return d
+    })
+  }
+
+  function reopenCurrentProject() {
+    if (!selectedProject) return
+    const ok = confirm(`Reabrir o projeto "${selectedProject.name}"?`)
+    if (!ok) return
+    setDocAndSave(d => {
+      d.projects = d.projects.map(p => p.id === selectedProject.id ? { ...p, status: "open", end: p.end || null } : p)
+      return d
+    })
+  }
+
+  function deleteCurrentProject() {
+    if (!selectedProject) return
+    const ok = confirm(`Excluir o projeto "${selectedProject.name}"? Todas as despesas desse projeto serão apagadas. Esta ação não pode ser desfeita.`)
+    if (!ok) return
+    const next = projects.find(p => p.id !== selectedProject.id) || null
+    setDocAndSave(d => {
+      d.expenses = d.expenses.filter(e => e.projectId !== selectedProject.id)
+      d.projects = d.projects.filter(p => p.id !== selectedProject.id)
+      return d
+    })
+    setSelectedProjectId(next?.id || "")
+    try { if (slug) localStorage.setItem(`project:${slug}`, next?.id || "") } catch {}
+  }
+
+  function createProject() {
+    const type = newProjectType
+    const name = (newProjectName || "").trim()
+    let finalName = name
+    let start = newProjectStart
+    let end = newProjectEnd
+
+    if (type === "monthly") {
+      finalName = finalName || todayYYYYMM()
+      start = firstDayOfMonth(finalName)
+      end = ""
+    } else {
+      finalName = finalName || (type === "trip" ? "Viagem" : "Projeto")
+    }
+
+    const p = { id: "proj-" + Math.random().toString(36).slice(2), name: finalName, type, start, end, status: "open" }
+    setDocAndSave(d => {
+      d.projects = [...d.projects, p]
+      return d
+    })
+    setSelectedProjectId(p.id)
+    localStorage.setItem(`project:${slug}`, p.id)
+    setShowNewProject(false)
+    setNewProjectName("")
+    setNewProjectStart(firstDayOfMonth(todayYYYYMM()))
+    setNewProjectEnd("")
+    setNewProjectType("monthly")
+  }
+
+  /* ===================== Ações: Pessoas/Categorias ===================== */
+  function addPerson(n) {
+    const name = String(n || "").trim()
+    if (!name) return
+    if (people.includes(name)) return
+    setDocAndSave(d => { d.people = [...d.people, name]; return d })
+  }
+  function removePerson(n) {
+    if (!confirm(`Remover a pessoa "${n}"? As despesas dela serão apagadas.`)) return
+    setDocAndSave(d => {
+      d.people = d.people.filter(p => p !== n)
+      d.expenses = d.expenses.filter(e => e.who !== n)
+      return d
+    })
+  }
+
+  function addCategory(n) {
+    const name = String(n || "").trim()
+    if (!name) return
+    if (categories.includes(name)) return
+    setDocAndSave(d => { d.categories = [...d.categories, name]; return d })
+  }
+  function removeCategory(n) {
+    if (!selectedProject) {
+      if (!confirm(`Remover a categoria "${n}" de TODOS os projetos? Todas as despesas dessa categoria serão apagadas.`)) return
+      setDocAndSave(d => {
+        d.categories = d.categories.filter(c => c !== n)
+        d.expenses = d.expenses.filter(e => e.category !== n)
+        return d
+      })
+      return
+    }
+    const choice = prompt(
+      `Remover a categoria "${n}"\n` +
+      `Digite:\n` +
+      `1 = Remover SOMENTE do projeto atual (${selectedProject.name})\n` +
+      `2 = Remover de TODOS os projetos`
+    )
+    if (choice === "1") {
+      setDocAndSave(d => {
+        d.categories = d.categories.filter(c => c !== n)
+        d.expenses = d.expenses.filter(e => !(e.category === n && e.projectId === selectedProject.id))
+        return d
+      })
+    } else if (choice === "2") {
+      setDocAndSave(d => {
+        d.categories = d.categories.filter(c => c !== n)
+        d.expenses = d.expenses.filter(e => e.category !== n)
+        return d
+      })
+    }
+  }
+
+  /* ===================== Ações: Despesas ===================== */
+  function addExpense() {
+    if (!selectedProject) { alert("Selecione/Crie um projeto."); return }
+    const value = Number(String(amount).replace(",", "."))
+    if (!who || !category || !value || value <= 0 || !date) return
+
+    const e = {
+      id: "exp-" + Math.random().toString(36).slice(2),
+      who, category,
+      amount: value,
+      desc: (desc || "").trim(),
+      date,
+      projectId: selectedProjectId,
+    }
+    setDocAndSave(d => { d.expenses = [...d.expenses, e]; return d })
+    setWho(""); setCategory(""); setAmount(""); setDesc("")
+  }
+  function removeExpense(id) {
+    setDocAndSave(d => { d.expenses = d.expenses.filter(e => e.id !== id); return d })
+  }
+
+  /* ===================== Derivados por Projeto + Mês ===================== */
+  const projectExpenses = useMemo(
+    () => expenses.filter(e => e.projectId === selectedProjectId),
+    [expenses, selectedProjectId]
+  )
+
+  const months = useMemo(() => {
+    const s = new Set(projectExpenses.map(e => monthKey(e.date)).filter(Boolean))
+    if (!s.size) s.add(todayYYYYMM())
+    return Array.from(s).sort().reverse()
+  }, [projectExpenses])
+
+  const monthlyExpenses = useMemo(
+    () => projectExpenses.filter(e => monthKey(e.date) === selectedMonth),
+    [projectExpenses, selectedMonth]
+  )
+
+  // >>> NOVO: aplica filtro por categoria E por pessoa
+  const filteredExpenses = useMemo(
+    () => monthlyExpenses.filter(e =>
+      (filterCat === "Todos" || e.category === filterCat) &&
+      (filterWho === "Todos" || e.who === filterWho)
+    ),
+    [monthlyExpenses, filterCat, filterWho]
+  )
+
+  const total = useMemo(() => monthlyExpenses.reduce((s, e) => s + e.amount, 0), [monthlyExpenses])
+
+  // Totais por pessoa (mês)
+  const paidBy = useMemo(() => {
+    const map = {}
+    for (const e of monthlyExpenses) map[e.who] = (map[e.who] || 0) + e.amount
+    return map
+  }, [monthlyExpenses])
+
+  const perHead = useMemo(() => {
+    const n = people.length || 1
+    return total / n
+  }, [people.length, total])
+
+  // Totais por categoria (mês)
+  const totalsByCategory = useMemo(() => {
+    const map = {}
+    for (const e of monthlyExpenses) map[e.category] = (map[e.category] || 0) + e.amount
+    return map
+  }, [monthlyExpenses])
+
+  // Agrupado por categoria (lista principal)
+  const groupedByCategory = useMemo(() => {
+    const map = {}
+    for (const e of filteredExpenses) {
+      map[e.category] = map[e.category] || { total: 0, items: [] }
+      map[e.category].total += e.amount
+      map[e.category].items.push(e)
+    }
+    return map
+  }, [filteredExpenses])
+
+  // Acertos (quem deve para quem)
+  const settlements = useMemo(() => {
+    const saldo = {}
+    for (const p of people) saldo[p] = (paidBy[p] || 0) - perHead
+    const devedores = [], credores = []
+    for (const p of people) {
+      const v = Number(saldo[p] || 0)
+      if (v < -0.009) devedores.push({ p, v: -v })
+      else if (v > 0.009) credores.push({ p, v })
+    }
+    devedores.sort((a,b)=> b.v - a.v)
+    credores.sort((a,b)=> b.v - a.v)
+    const moves = []
+    let i=0, j=0
+    while (i < devedores.length && j < credores.length) {
+      const d = devedores[i], c = credores[j]
+      const x = Math.min(d.v, c.v)
+      moves.push({ from: d.p, to: c.p, value: x })
+      d.v -= x; c.v -= x
+      if (d.v < 0.009) i++
+      if (c.v < 0.009) j++
+    }
+    return moves
+  }, [people, paidBy, perHead])
+
+  /* ===================== UI ===================== */
+  return (
+    <div className="min-h-dvh bg-slate-50">
+      <header className="bg-white border-b">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <h1 className="font-semibold">Gastos em Família</h1>
+            {selectedProject && (
+              <span className={`px-2 py-0.5 text-xs rounded ${isClosed ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>
+                {isClosed ? "Projeto fechado" : "Projeto aberto"}
+              </span>
+            )}
+          </div>
+          <div className="text-sm text-slate-500">
+            {saving ? "Salvando…" : (lastSavedAt ? `Salvo às ${fmtHora(lastSavedAt)}` : "—")}
+          </div>
+          <button onClick={onSignOut} className="text-sm text-slate-600 hover:underline">Sair</button>
+        </div>
+      </header>
+
+      <div className="max-w-6xl mx-auto px-4 py-6">
+        {/* Projeto (esquerda) + Família (direita) na MESMA LINHA */}
+        <section className="grid lg:grid-cols-2 gap-4 mb-4">
+          {/* Projeto — esquerda */}
+          <div className="bg-white rounded-2xl shadow p-4">
+            <h2 className="font-semibold mb-3">Projeto</h2>
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center gap-2">
+                <select
+                  className="px-3 py-2 rounded-xl border min-w-[220px]"
+                  value={selectedProjectId}
+                  onChange={(e)=>{
+                    setSelectedProjectId(e.target.value)
+                    if (slug) localStorage.setItem(`pro
+
           ))}
         </ul>
       ) : (
