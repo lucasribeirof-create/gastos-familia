@@ -1,9 +1,21 @@
 // src/app/api/family/[slug]/route.js
 import { NextResponse } from "next/server"
-import { redis } from "../../_lib/db"   // << agora é relativo, simples
+import Redis from "ioredis"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
+
+// ---- Redis direto aqui (sem imports externos) ----
+const url = process.env.REDIS_URL
+if (!url) {
+  console.warn("[WARN] REDIS_URL não definido. A API vai falhar ao persistir.")
+}
+const redis = new Redis(url, {
+  maxRetriesPerRequest: 2,
+  enableReadyCheck: true,
+  lazyConnect: false,
+  tls: url?.startsWith("rediss://") ? {} : undefined,
+})
 
 const KEY = (slug) => `family:${slug}`
 
