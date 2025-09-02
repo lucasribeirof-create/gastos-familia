@@ -5,8 +5,14 @@ import { useSession, signOut } from "next-auth/react"
 import { useRouter } from "next/navigation"
 import { carregarFamilia, salvarFamilia } from "../actions"
 
+// === Gráficos (recharts)
+import {
+  PieChart, Pie, Tooltip, ResponsiveContainer,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Legend
+} from "recharts"
+
 /* ===================== Helpers ===================== */
-const currency = (v) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
+const currency = (v) => (Number.isFinite(v) ? v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) : "R$ 0,00")
 const fmtHora = (iso) => { try { return new Date(iso).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"}) } catch { return "" } }
 const monthKey = (dateStr) => (dateStr ? String(dateStr).slice(0,7) : "")
 const monthLabel = (yyyyMM) => (/^\d{4}-\d{2}$/.test(yyyyMM) ? `${yyyyMM.slice(5,7)}/${yyyyMM.slice(0,4)}` : yyyyMM || "")
@@ -17,9 +23,7 @@ const firstDayOfMonth = (yyyyMM) => `${yyyyMM}-01`
 export default function Page() {
   const { data: session, status } = useSession()
   const router = useRouter()
-  useEffect(() => {
-    if (status === "unauthenticated") router.replace("/")
-  }, [status, router])
+  useEffect(() => { if (status === "unauthenticated") router.replace("/") }, [status, router])
   if (status === "loading") return <div className="p-6">Carregando…</div>
   if (!session) return <div className="p-6">Faça login para continuar.</div>
   return <GastosApp user={session.user} onSignOut={signOut} />
@@ -45,28 +49,32 @@ function GastosApp({ user, onSignOut }) {
   const [selectedProjectId, setSelectedProjectId] = useState("")
   const selectedProject = useMemo(() => projects.find(p => p.id === selectedProjectId) || null, [projects, selectedProjectId])
   const isClosed = selectedProject?.status === "closed"
-  const readOnly = false // <— PROJETO FECHADO CONTINUA EDITÁVEL
+  const readOnly = false // projeto fechado continua editável
 
-  // ----- Inputs de criação de projeto -----
+  // ----- Criar projeto -----
   const [showNewProject, setShowNewProject] = useState(false)
-  const [newProjectType, setNewProjectType] = useState("monthly") // monthly | trip | custom
+  const [newProjectType, setNewProjectType] = useState("monthly")
   const [newProjectName, setNewProjectName] = useState("")
   const [newProjectStart, setNewProjectStart] = useState(firstDayOfMonth(todayYYYYMM()))
   const [newProjectEnd, setNewProjectEnd] = useState("")
 
-  // ----- Inputs e filtros de despesas -----
+  // ----- Lançar despesa -----
   const [who, setWho] = useState("")
   const [category, setCategory] = useState("")
   const [amount, setAmount] = useState("")
   const [desc, setDesc] = useState("")
   const [date, setDate] = useState(new Date().toISOString().slice(0,10))
 
+  // ----- Filtros/ordenacao/período -----
   const [selectedMonth, setSelectedMonth] = useState(todayYYYYMM())
   const [filterCat, setFilterCat] = useState("Todos")
-  const [filterWho, setFilterWho] = useState("Todos")          // <<< NOVO: filtro por pessoa
-  const [sortOrder, setSortOrder] = useState("desc")           // <<< NOVO: "desc" | "asc"
+  const [filterWho, setFilterWho] = useState("Todos")
+  const [sortOrder, setSortOrder] = useState("desc") // "desc" | "asc"
 
-  /* ===================== Carregar documento ===================== */
+  // ----- Gráficos -----
+  const [chartType, setChartType] = useState("pie") // "pie" | "line"
+
+  /* ===================== Persistência / Save ===================== */
   const setDocAndSave = useCallback((next) => {
     const doc = { people, categories, projects, expenses }
     const merged = typeof next === "function" ? next(doc) : next
@@ -75,8 +83,7 @@ function GastosApp({ user, onSignOut }) {
   }, [people, categories, projects, expenses, slug])
 
   const queueSave = useCallback((next) => {
-    if (!slug) return
-    if (!next) return
+    if (!slug || !next) return
     setPeople(next.people); setCategories(next.categories); setProjects(next.projects); setExpenses(next.expenses)
     _queueSave(next)
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -104,14 +111,15 @@ function GastosApp({ user, onSignOut }) {
     }, 800)
   }, [slug])
 
-  const loadFromCloud = useCallback(async () => {
-    if (!slugInput) return
+  /* ===================== Load ===================== */
+  // Carrega por um slug específico e grava no localStorage para reabrir depois
+  const loadBySlug = useCallback(async (slugToLoad) => {
+    if (!slugToLoad) return
     setLoading(true); setError("")
     try {
-      const data = await carregarFamilia(slugInput)
+      const data = await carregarFamilia(slugToLoad)
       const doc = data || { people: [], categories: [], projects: [], expenses: [] }
 
-      // migração mínima: se não houver projetos, cria um mensal do mês atual
       let nextProjects = Array.isArray(doc.projects) ? doc.projects : []
       if (!nextProjects.length) {
         nextProjects = [{
@@ -129,33 +137,50 @@ function GastosApp({ user, onSignOut }) {
       setProjects(nextProjects)
       setExpenses(Array.isArray(doc.expenses) ? doc.expenses : [])
 
-      setSlug(slugInput)
-      localStorage.setItem("family:slug", slugInput)
+      setSlug(slugToLoad)
+      localStorage.setItem("family:slug", slugToLoad)
 
-      // projeto selecionado
-      const localPid = localStorage.getItem(`project:${slugInput}`) || nextProjects[0]?.id || ""
+      const localPid = localStorage.getItem(`project:${slugToLoad}`) || nextProjects[0]?.id || ""
       setSelectedProjectId(localPid)
       setSelectedMonth(todayYYYYMM())
       setFilterCat("Todos")
       setFilterWho("Todos")
+      setSlugInput(slugToLoad)
     } catch(e) {
       setError(String(e.message || e))
     } finally {
       setLoading(false)
     }
-  }, [slugInput])
+  }, [])
+
+  // Mantém a API atual do botão "Usar"
+  const loadFromCloud = useCallback(async () => {
+    if (!slugInput) return
+    await loadBySlug(slugInput)
+  }, [slugInput, loadBySlug])
+
+  // Ao montar, reabre automaticamente a última família usada (se existir). Caso contrário, encerra o estado de loading.
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("family:slug")
+      if (saved) {
+        loadBySlug(saved)
+        return
+      }
+    } catch {}
+    setLoading(false)
+  }, [loadBySlug])
 
   /* ===================== Ações: Projeto ===================== */
   function closeCurrentProject() {
     if (!selectedProject) return
-    const ok = confirm(`Fechar o projeto "${selectedProject.name}"? O status ficará "fechado" e a data de término será marcada, mas você ainda poderá editar.`)
+    const ok = confirm(`Fechar o projeto "${selectedProject.name}"? Você ainda poderá editar.`)
     if (!ok) return
     setDocAndSave(d => {
       d.projects = d.projects.map(p => p.id === selectedProject.id ? { ...p, status: "closed", end: p.end || new Date().toISOString().slice(0,10) } : p)
       return d
     })
   }
-
   function reopenCurrentProject() {
     if (!selectedProject) return
     const ok = confirm(`Reabrir o projeto "${selectedProject.name}"?`)
@@ -165,10 +190,9 @@ function GastosApp({ user, onSignOut }) {
       return d
     })
   }
-
   function deleteCurrentProject() {
     if (!selectedProject) return
-    const ok = confirm(`Excluir o projeto "${selectedProject.name}"? Todas as despesas desse projeto serão apagadas. Esta ação não pode ser desfeita.`)
+    const ok = confirm(`Excluir o projeto "${selectedProject.name}"? Todas as despesas dele serão apagadas. Esta ação não pode ser desfeita.`)
     if (!ok) return
     const next = projects.find(p => p.id !== selectedProject.id) || null
     setDocAndSave(d => {
@@ -179,41 +203,26 @@ function GastosApp({ user, onSignOut }) {
     setSelectedProjectId(next?.id || "")
     try { if (slug) localStorage.setItem(`project:${slug}`, next?.id || "") } catch {}
   }
-
   function createProject() {
     const type = newProjectType
     const name = (newProjectName || "").trim()
     let finalName = name
     let start = newProjectStart
     let end = newProjectEnd
-
-    if (type === "monthly") {
-      finalName = finalName || todayYYYYMM()
-      start = firstDayOfMonth(finalName)
-      end = ""
-    } else {
-      finalName = finalName || (type === "trip" ? "Viagem" : "Projeto")
-    }
-
+    if (type === "monthly") { finalName = finalName || todayYYYYMM(); start = firstDayOfMonth(finalName); end = "" }
+    else { finalName = finalName || (type === "trip" ? "Viagem" : "Projeto") }
     const p = { id: "proj-" + Math.random().toString(36).slice(2), name: finalName, type, start, end, status: "open" }
-    setDocAndSave(d => {
-      d.projects = [...d.projects, p]
-      return d
-    })
+    setDocAndSave(d => { d.projects = [...d.projects, p]; return d })
     setSelectedProjectId(p.id)
     localStorage.setItem(`project:${slug}`, p.id)
     setShowNewProject(false)
-    setNewProjectName("")
-    setNewProjectStart(firstDayOfMonth(todayYYYYMM()))
-    setNewProjectEnd("")
-    setNewProjectType("monthly")
+    setNewProjectName(""); setNewProjectStart(firstDayOfMonth(todayYYYYMM())); setNewProjectEnd(""); setNewProjectType("monthly")
   }
 
   /* ===================== Ações: Pessoas/Categorias ===================== */
   function addPerson(n) {
     const name = String(n || "").trim()
-    if (!name) return
-    if (people.includes(name)) return
+    if (!name || people.includes(name)) return
     setDocAndSave(d => { d.people = [...d.people, name]; return d })
   }
   function removePerson(n) {
@@ -224,41 +233,22 @@ function GastosApp({ user, onSignOut }) {
       return d
     })
   }
-
   function addCategory(n) {
     const name = String(n || "").trim()
-    if (!name) return
-    if (categories.includes(name)) return
+    if (!name || categories.includes(name)) return
     setDocAndSave(d => { d.categories = [...d.categories, name]; return d })
   }
   function removeCategory(n) {
     if (!selectedProject) {
       if (!confirm(`Remover a categoria "${n}" de TODOS os projetos? Todas as despesas dessa categoria serão apagadas.`)) return
-      setDocAndSave(d => {
-        d.categories = d.categories.filter(c => c !== n)
-        d.expenses = d.expenses.filter(e => e.category !== n)
-        return d
-      })
+      setDocAndSave(d => { d.categories = d.categories.filter(c => c !== n); d.expenses = d.expenses.filter(e => e.category !== n); return d })
       return
     }
-    const choice = prompt(
-      `Remover a categoria "${n}"\n` +
-      `Digite:\n` +
-      `1 = Remover SOMENTE do projeto atual (${selectedProject.name})\n` +
-      `2 = Remover de TODOS os projetos`
-    )
+    const choice = prompt(`Remover a categoria "${n}"\n1 = Remover SOMENTE do projeto atual (${selectedProject.name})\n2 = Remover de TODOS os projetos`)
     if (choice === "1") {
-      setDocAndSave(d => {
-        d.categories = d.categories.filter(c => c !== n)
-        d.expenses = d.expenses.filter(e => !(e.category === n && e.projectId === selectedProject.id))
-        return d
-      })
+      setDocAndSave(d => { d.categories = d.categories.filter(c => c !== n); d.expenses = d.expenses.filter(e => !(e.category === n && e.projectId === selectedProject.id)); return d })
     } else if (choice === "2") {
-      setDocAndSave(d => {
-        d.categories = d.categories.filter(c => c !== n)
-        d.expenses = d.expenses.filter(e => e.category !== n)
-        return d
-      })
+      setDocAndSave(d => { d.categories = d.categories.filter(c => c !== n); d.expenses = d.expenses.filter(e => e.category !== n); return d })
     }
   }
 
@@ -267,40 +257,27 @@ function GastosApp({ user, onSignOut }) {
     if (!selectedProject) { alert("Selecione/Crie um projeto."); return }
     const value = Number(String(amount).replace(",", "."))
     if (!who || !category || !value || value <= 0 || !date) return
-
-    const e = {
-      id: "exp-" + Math.random().toString(36).slice(2),
-      who, category,
-      amount: value,
-      desc: (desc || "").trim(),
-      date,
-      projectId: selectedProjectId,
-    }
+    const e = { id: "exp-" + Math.random().toString(36).slice(2), who, category, amount: value, desc: (desc || "").trim(), date, projectId: selectedProjectId }
     setDocAndSave(d => { d.expenses = [...d.expenses, e]; return d })
     setWho(""); setCategory(""); setAmount(""); setDesc("")
   }
-  function removeExpense(id) {
-    setDocAndSave(d => { d.expenses = d.expenses.filter(e => e.id !== id); return d })
-  }
+  function removeExpense(id) { setDocAndSave(d => { d.expenses = d.expenses.filter(e => e.id !== id); return d }) }
 
-  /* ===================== Derivados por Projeto + Mês ===================== */
-  const projectExpenses = useMemo(
-    () => expenses.filter(e => e.projectId === selectedProjectId),
-    [expenses, selectedProjectId]
-  )
+  /* ===================== Derivados por Projeto & Período ===================== */
+  const projectExpenses = useMemo(() => expenses.filter(e => e.projectId === selectedProjectId), [expenses, selectedProjectId])
 
+  // meses + "ALL" (Total do projeto)
   const months = useMemo(() => {
     const s = new Set(projectExpenses.map(e => monthKey(e.date)).filter(Boolean))
     if (!s.size) s.add(todayYYYYMM())
-    return Array.from(s).sort().reverse()
+    return ["ALL", ...Array.from(s).sort().reverse()]
   }, [projectExpenses])
 
   const monthlyExpenses = useMemo(
-    () => projectExpenses.filter(e => monthKey(e.date) === selectedMonth),
+    () => selectedMonth === "ALL" ? projectExpenses : projectExpenses.filter(e => monthKey(e.date) === selectedMonth),
     [projectExpenses, selectedMonth]
   )
 
-  // >>> NOVO: aplica filtro por categoria E por pessoa
   const filteredExpenses = useMemo(
     () => monthlyExpenses.filter(e =>
       (filterCat === "Todos" || e.category === filterCat) &&
@@ -311,7 +288,7 @@ function GastosApp({ user, onSignOut }) {
 
   const total = useMemo(() => monthlyExpenses.reduce((s, e) => s + e.amount, 0), [monthlyExpenses])
 
-  // Totais por pessoa (mês)
+  // Totais por pessoa no período mostrado (monthlyExpenses)
   const paidBy = useMemo(() => {
     const map = {}
     for (const e of monthlyExpenses) map[e.who] = (map[e.who] || 0) + e.amount
@@ -323,14 +300,14 @@ function GastosApp({ user, onSignOut }) {
     return total / n
   }, [people.length, total])
 
-  // Totais por categoria (mês)
+  // Totais por categoria no período mostrado
   const totalsByCategory = useMemo(() => {
     const map = {}
     for (const e of monthlyExpenses) map[e.category] = (map[e.category] || 0) + e.amount
     return map
   }, [monthlyExpenses])
 
-  // Agrupado por categoria (lista principal)
+  // Agrupado por categoria (aplica filtros Cat/Who)
   const groupedByCategory = useMemo(() => {
     const map = {}
     for (const e of filteredExpenses) {
@@ -341,7 +318,7 @@ function GastosApp({ user, onSignOut }) {
     return map
   }, [filteredExpenses])
 
-  // Acertos (quem deve para quem)
+  // Acertos (quem deve para quem) no período mostrado
   const settlements = useMemo(() => {
     const saldo = {}
     for (const p of people) saldo[p] = (paidBy[p] || 0) - perHead
@@ -351,8 +328,7 @@ function GastosApp({ user, onSignOut }) {
       if (v < -0.009) devedores.push({ p, v: -v })
       else if (v > 0.009) credores.push({ p, v })
     }
-    devedores.sort((a,b)=> b.v - a.v)
-    credores.sort((a,b)=> b.v - a.v)
+    devedores.sort((a,b)=> b.v - a.v); credores.sort((a,b)=> b.v - a.v)
     const moves = []
     let i=0, j=0
     while (i < devedores.length && j < credores.length) {
@@ -365,6 +341,28 @@ function GastosApp({ user, onSignOut }) {
     }
     return moves
   }, [people, paidBy, perHead])
+
+  const selectedPeriodLabel = selectedMonth === "ALL" ? "Total" : monthLabel(selectedMonth)
+
+  /* ===================== Dados dos GRÁFICOS ===================== */
+  const pieData = useMemo(() => {
+    const map = {}
+    for (const e of filteredExpenses) map[e.category] = (map[e.category] || 0) + e.amount
+    return Object.entries(map).map(([name, value]) => ({ name, value })).sort((a,b)=> b.value - a.value)
+  }, [filteredExpenses])
+
+  const lineData = useMemo(() => {
+    const map = {}
+    for (const e of projectExpenses) {
+      if (filterCat !== "Todos" && e.category !== filterCat) continue
+      if (filterWho !== "Todos" && e.who !== filterWho) continue
+      const m = monthKey(e.date)
+      map[m] = (map[m] || 0) + e.amount
+    }
+    return Object.entries(map)
+      .sort((a,b)=> a[0].localeCompare(b[0]))
+      .map(([month, total]) => ({ month, total }))
+  }, [projectExpenses, filterCat, filterWho])
 
   /* ===================== UI ===================== */
   return (
@@ -387,15 +385,15 @@ function GastosApp({ user, onSignOut }) {
       </header>
 
       <div className="max-w-6xl mx-auto px-4 py-6">
-        {/* Projeto (esquerda) + Família (direita) na MESMA LINHA */}
+        {/* Projeto (esquerda) + Família (direita) */}
         <section className="grid lg:grid-cols-2 gap-4 mb-4">
-          {/* Projeto — esquerda */}
+          {/* Projeto — esquerda (todos botões dentro do box) */}
           <div className="bg-white rounded-2xl shadow p-4">
             <h2 className="font-semibold mb-3">Projeto</h2>
             <div className="flex flex-col gap-3">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-col md:flex-row md:items-center gap-2">
                 <select
-                  className="px-3 py-2 rounded-xl border min-w-[220px]"
+                  className="px-3 py-2 rounded-xl border min-w-[220px] w-full md:w-auto"
                   value={selectedProjectId}
                   onChange={(e)=>{
                     setSelectedProjectId(e.target.value)
@@ -409,37 +407,11 @@ function GastosApp({ user, onSignOut }) {
                   ))}
                 </select>
 
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={()=>setShowNewProject(v=>!v)}
-                    className="px-3 py-2 rounded-xl bg-blue-600 text-white"
-                  >
-                    Novo
-                  </button>
-                  <button
-                    onClick={closeCurrentProject}
-                    disabled={!selectedProject || isClosed}
-                    className={`px-3 py-2 rounded-xl border ${(!selectedProject || isClosed) ? "text-gray-400 border-gray-200" : ""}`}
-                    title={isClosed ? "Já está fechado" : "Fechar projeto atual"}
-                  >
-                    Fechar
-                  </button>
-                  <button
-                    onClick={reopenCurrentProject}
-                    disabled={!selectedProject || !isClosed}
-                    className={`px-3 py-2 rounded-xl border ${(!selectedProject || !isClosed) ? "text-gray-400 border-gray-200" : ""}`}
-                    title={!isClosed ? "Projeto já está aberto" : "Reabrir projeto"}
-                  >
-                    Reabrir
-                  </button>
-                  <button
-                    onClick={deleteCurrentProject}
-                    disabled={!selectedProject}
-                    className={`px-3 py-2 rounded-xl border ${!selectedProject ? "text-gray-400 border-gray-200" : "text-red-700 border-red-200 hover:bg-red-50"}`}
-                    title="Excluir projeto e todas as despesas dele"
-                  >
-                    Excluir
-                  </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button onClick={()=>setShowNewProject(v=>!v)} className="px-3 py-2 rounded-xl bg-blue-600 text-white">Novo</button>
+                  <button onClick={closeCurrentProject} disabled={!selectedProject || isClosed} className={`px-3 py-2 rounded-xl border ${(!selectedProject || isClosed) ? "text-gray-400 border-gray-200" : ""}`}>Fechar</button>
+                  <button onClick={reopenCurrentProject} disabled={!selectedProject || !isClosed} className={`px-3 py-2 rounded-xl border ${(!selectedProject || !isClosed) ? "text-gray-400 border-gray-200" : ""}`}>Reabrir</button>
+                  <button onClick={deleteCurrentProject} disabled={!selectedProject} className={`px-3 py-2 rounded-xl border ${!selectedProject ? "text-gray-400 border-gray-200" : "text-red-700 border-red-200 hover:bg-red-50"}`}>Excluir</button>
                 </div>
               </div>
 
@@ -491,9 +463,9 @@ function GastosApp({ user, onSignOut }) {
           </div>
         </section>
 
-        {/* Mês (dentro do projeto) */}
+        {/* Período (mês ou Total) */}
         <section className="bg-white rounded-2xl shadow p-4">
-          <h2 className="font-semibold mb-3">Período (mês) — {selectedProject?.name || "—"}</h2>
+          <h2 className="font-semibold mb-3">Período — {selectedProject?.name || "—"}</h2>
           <div className="flex flex-wrap gap-2">
             {months.map(m => (
               <button
@@ -501,13 +473,13 @@ function GastosApp({ user, onSignOut }) {
                 onClick={()=>setSelectedMonth(m)}
                 className={`px-3 py-1.5 rounded-full border ${selectedMonth===m ? "bg-slate-900 text-white border-slate-900" : ""}`}
               >
-                {monthLabel(m)}
+                {m === "ALL" ? "Total" : monthLabel(m)}
               </button>
             ))}
           </div>
         </section>
 
-        {/* Pessoas / Categorias / Filtros */}
+        {/* Pessoas / Categorias / Filtros (chips/toggles) */}
         <section className="grid lg:grid-cols-3 gap-4 mt-4">
           <div className="bg-white rounded-2xl shadow p-4">
             <h2 className="font-semibold mb-3">Pessoas</h2>
@@ -517,48 +489,28 @@ function GastosApp({ user, onSignOut }) {
             <h2 className="font-semibold mb-3">Categorias</h2>
             <TagEditor items={categories} onAdd={addCategory} onRemove={removeCategory} placeholder="Adicionar categoria" />
           </div>
+
+          {/* Filtro com toggles para Categoria e Pessoa */}
           <div className="bg-white rounded-2xl shadow p-4">
             <h2 className="font-semibold mb-3">Filtro</h2>
 
-            {/* Linha 1: filtro por categoria (chips) */}
-            <div className="flex flex-wrap gap-2 mb-3">
-              <button onClick={()=>setFilterCat("Todos")} className={`px-3 py-1.5 rounded-full border ${filterCat==="Todos" ? "bg-slate-900 text-white border-slate-900" : ""}`}>Todos</button>
-              {categories.map(c => (
-                <button key={c} onClick={()=>setFilterCat(c)} className={`px-3 py-1.5 rounded-full border ${filterCat===c ? "bg-slate-900 text-white border-slate-900" : ""}`}>{c}</button>
-              ))}
+            <div className="mb-3">
+              <div className="text-xs mb-1 text-slate-500">Categoria</div>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={()=>setFilterCat("Todos")} className={`px-3 py-1.5 rounded-full border ${filterCat==="Todos" ? "bg-slate-900 text-white border-slate-900" : ""}`}>Todos</button>
+                {categories.map(c => (
+                  <button key={c} onClick={()=>setFilterCat(c)} className={`px-3 py-1.5 rounded-full border ${filterCat===c ? "bg-slate-900 text-white border-slate-900" : ""}`}>{c}</button>
+                ))}
+              </div>
             </div>
 
-            {/* Linha 2: NOVO — filtro por pessoa + ordenação por data */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs mb-1">Pessoa</label>
-                <select
-                  value={filterWho}
-                  onChange={(e)=>setFilterWho(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border"
-                >
-                  <option value="Todos">Todos</option>
-                  {people.map(p => <option key={p} value={p}>{p}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs mb-1">Ordenar por data</label>
-                <div className="flex gap-2">
-                  <button
-                    onClick={()=>setSortOrder("desc")}
-                    className={`px-3 py-2 rounded-xl border ${sortOrder==="desc" ? "bg-slate-900 text-white border-slate-900" : ""}`}
-                    title="Mais recente primeiro"
-                  >
-                    Mais recente
-                  </button>
-                  <button
-                    onClick={()=>setSortOrder("asc")}
-                    className={`px-3 py-2 rounded-xl border ${sortOrder==="asc" ? "bg-slate-900 text-white border-slate-900" : ""}`}
-                    title="Mais antigo primeiro"
-                  >
-                    Mais antigo
-                  </button>
-                </div>
+            <div>
+              <div className="text-xs mb-1 text-slate-500">Pessoa</div>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={()=>setFilterWho("Todos")} className={`px-3 py-1.5 rounded-full border ${filterWho==="Todos" ? "bg-slate-900 text-white border-slate-900" : ""}`}>Todos</button>
+                {people.map(p => (
+                  <button key={p} onClick={()=>setFilterWho(p)} className={`px-3 py-1.5 rounded-full border ${filterWho===p ? "bg-slate-900 text-white border-slate-900" : ""}`}>{p}</button>
+                ))}
               </div>
             </div>
           </div>
@@ -602,28 +554,37 @@ function GastosApp({ user, onSignOut }) {
           </div>
         </section>
 
-        {/* Lista (agrupada por categoria) + Resumos */}
+        {/* Lista (agrupada) + Resumos */}
         <section className="grid lg:grid-cols-3 gap-4 mt-4">
-          {/* Esquerda: despesas agrupadas por categoria (mês + filtro) */}
+          {/* Esquerda: despesas agrupadas por categoria */}
           <div className="lg:col-span-2 bg-white rounded-2xl shadow p-4">
             <div className="flex items-center justify-between mb-3">
               <h2 className="font-semibold">
-                Despesas de {monthLabel(selectedMonth)} {selectedProject ? `— ${selectedProject.name}` : ""}{" "}
+                Despesas — {selectedPeriodLabel} {selectedProject ? `• ${selectedProject.name}` : ""}{" "}
                 {filterCat!=="Todos" && <span className="text-slate-500">({filterCat})</span>}
                 {filterWho!=="Todos" && <span className="text-slate-500"> • {filterWho}</span>}
               </h2>
-              <div className="text-sm text-slate-500">Total: {currency(total)}</div>
+              <div className="flex items-center gap-3">
+                <div className="text-sm text-slate-500">Total: {currency(total)}</div>
+                {/* Toggle único de ordenação no topo */}
+                <button
+                  onClick={()=>setSortOrder(prev => prev==="desc" ? "asc" : "desc")}
+                  className="text-xs px-2 py-1 rounded border"
+                  title="Alternar ordenação por data"
+                >
+                  Data: {sortOrder==="desc" ? "recente → antigo" : "antigo → recente"}
+                </button>
+              </div>
             </div>
 
             {Object.keys(groupedByCategory).length === 0 ? (
-              <p className="text-sm text-slate-500">Sem despesas neste mês (ou no filtro aplicado).</p>
+              <p className="text-sm text-slate-500">Sem despesas no período (ou com o filtro aplicado).</p>
             ) : (
               <div className="space-y-6">
                 {Object.entries(groupedByCategory)
                   .sort((a,b)=> b[1].total - a[1].total)
                   .map(([cat, group], idx) => {
                     const itemsSorted = [...group.items].sort((a,b)=>{
-                      // YYYY-MM-DD compara bem como string
                       if (a.date === b.date) return 0
                       if (sortOrder === "desc") return a.date > b.date ? -1 : 1
                       return a.date > b.date ? 1 : -1
@@ -644,9 +605,7 @@ function GastosApp({ user, onSignOut }) {
                                 </div>
                               </div>
                               <div className="w-28 text-right font-semibold">{currency(e.amount)}</div>
-                              <button onClick={()=>removeExpense(e.id)} className={`text-xs ${readOnly?"text-gray-400":"text-red-600 hover:underline"}`}>
-                                remover
-                              </button>
+                              <button onClick={()=>removeExpense(e.id)} className={`text-xs ${readOnly?"text-gray-400":"text-red-600 hover:underline"}`}>remover</button>
                             </li>
                           ))}
                         </ul>
@@ -657,10 +616,10 @@ function GastosApp({ user, onSignOut }) {
             )}
           </div>
 
-          {/* Direita: Resumos do mês (inclui TOTAL GERAL DO MÊS) */}
+          {/* Direita: Resumos do período */}
           <div className="bg-white rounded-2xl shadow p-4 space-y-6">
             <div className="rounded-xl border p-3 bg-slate-50">
-              <h3 className="font-semibold mb-1">Total do mês</h3>
+              <h3 className="font-semibold mb-1">{selectedMonth==="ALL" ? "Total do período (projeto inteiro)" : "Total do mês"}</h3>
               <div className="text-2xl font-bold">{currency(total)}</div>
             </div>
 
@@ -685,9 +644,9 @@ function GastosApp({ user, onSignOut }) {
             </div>
 
             <div>
-              <h3 className="font-semibold mb-2">Totais por categoria (mês)</h3>
+              <h3 className="font-semibold mb-2">Totais por categoria ({selectedPeriodLabel})</h3>
               {Object.keys(totalsByCategory).length === 0 ? (
-                <p className="text-sm text-slate-500">Sem lançamentos neste mês.</p>
+                <p className="text-sm text-slate-500">Sem lançamentos.</p>
               ) : (
                 <ul className="text-sm space-y-1">
                   {Object.entries(totalsByCategory)
@@ -703,9 +662,9 @@ function GastosApp({ user, onSignOut }) {
             </div>
 
             <div>
-              <h3 className="font-semibold mb-2">Acertos (mês)</h3>
+              <h3 className="font-semibold mb-2">Acertos ({selectedPeriodLabel})</h3>
               {settlements.length === 0 ? (
-                <p className="text-sm text-slate-500">Ninguém deve ninguém (ou ainda faltam lançamentos).</p>
+                <p className="text-sm text-slate-500">Ninguém deve ninguém (ou faltam lançamentos).</p>
               ) : (
                 <ul className="space-y-1 text-sm">
                   {settlements.map((m, idx) => (
@@ -717,6 +676,56 @@ function GastosApp({ user, onSignOut }) {
                 </ul>
               )}
             </div>
+          </div>
+        </section>
+
+        {/* ===================== Painel: GRÁFICOS (com seletor) ===================== */}
+        <section className="bg-white rounded-2xl shadow p-4 mt-4">
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <h2 className="font-semibold">Gráficos — {selectedProject?.name || "—"}</h2>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={()=>setChartType("pie")}
+                className={`px-3 py-1.5 rounded-full border ${chartType==="pie" ? "bg-slate-900 text-white border-slate-900" : ""}`}
+                title="Distribuição por categoria no período filtrado"
+              >
+                Pizza
+              </button>
+              <button
+                onClick={()=>setChartType("line")}
+                className={`px-3 py-1.5 rounded-full border ${chartType==="line" ? "bg-slate-900 text-white border-slate-900" : ""}`}
+                title="Evolução mensal do projeto (com filtros aplicados)"
+              >
+                Linha
+              </button>
+            </div>
+          </div>
+
+          <div className="text-xs text-slate-500 mb-3">
+            {chartType==="pie"
+              ? <>Categorias de <b>{selectedPeriodLabel}</b> {filterCat!=="Todos" && <>• categoria: <b>{filterCat}</b></>} {filterWho!=="Todos" && <>• pessoa: <b>{filterWho}</b></>} </>
+              : <>Total mensal do projeto (filtros aplicados • {filterCat} • {filterWho})</>
+            }
+          </div>
+
+          <div className="h-72 w-full">
+            <ResponsiveContainer>
+              {chartType === "pie" ? (
+                <PieChart>
+                  <Tooltip formatter={(val)=>currency(Number(val))} />
+                  <Pie data={pieData} dataKey="value" nameKey="name" outerRadius={100} label />
+                </PieChart>
+              ) : (
+                <LineChart data={lineData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="month" />
+                  <YAxis />
+                  <Tooltip formatter={(val)=>currency(Number(val))} />
+                  <Legend />
+                  <Line type="monotone" dataKey="total" />
+                </LineChart>
+              )}
+            </ResponsiveContainer>
           </div>
         </section>
 
