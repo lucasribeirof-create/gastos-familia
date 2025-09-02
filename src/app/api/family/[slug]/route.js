@@ -1,6 +1,6 @@
 // src/app/api/family/[slug]/route.js
 import { NextResponse } from "next/server"
-import { redis } from "@/utils/db"   // usa alias @ => ./src/utils/db
+import { redis } from "../../_lib/db"   // << agora é relativo, simples
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
