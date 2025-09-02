@@ -4,16 +4,10 @@ export const dynamic = "force-dynamic"
 import { getServerSession } from "next-auth"
 import { carregarFamilia, salvarFamilia } from "@/app/actions"
 
-function normEmail(v) {
-  return (v || "").toString().trim().toLowerCase()
-}
-
-function todayYYYYMM() {
-  return new Date().toISOString().slice(0, 7)
-}
-function firstDayOfMonth(ym) {
-  return `${ym}-01`
-}
+// ---------- helpers ----------
+const normEmail = (v) => (v || "").toString().trim().toLowerCase()
+const todayYYYYMM = () => new Date().toISOString().slice(0, 7)
+const firstDayOfMonth = (ym) => `${ym}-01`
 
 function makeDefaultDoc(ownerEmail) {
   const pid = "proj-" + Math.random().toString(36).slice(2, 8)
@@ -32,15 +26,40 @@ function makeDefaultDoc(ownerEmail) {
       },
     ],
     expenses: [],
+    updatedAt: new Date().toISOString(),
   }
 }
 
-/**
- * GET /api/family/[slug]
- * - Requer usuário logado (usa getServerSession() sem authOptions para evitar erro de import).
- * - Tenta carregar o doc; se falhar ou não existir, cria com o usuário como OWNER e salva.
- * - Garante que o usuário esteja como membro owner em pelo menos 1 projeto.
- */
+function sanitizeDoc(doc) {
+  const safe = doc && typeof doc === "object" ? doc : {}
+  const people = Array.isArray(safe.people) ? safe.people : []
+  const categories = Array.isArray(safe.categories) ? safe.categories : []
+  let projects = Array.isArray(safe.projects) ? safe.projects : []
+  const expenses = Array.isArray(safe.expenses) ? safe.expenses : []
+
+  projects = projects.map((p) => ({
+    id: p?.id || "proj-" + Math.random().toString(36).slice(2, 8),
+    name: String(p?.name || "Projeto"),
+    type: p?.type || "custom",
+    start: p?.start || firstDayOfMonth(todayYYYYMM()),
+    end: p?.end || "",
+    status: p?.status || "open",
+    members: Array.isArray(p?.members) ? p.members : [],
+  }))
+
+  return { people, categories, projects, expenses }
+}
+
+function hasWriteAccess(projects, email) {
+  for (const p of projects) {
+    const members = Array.isArray(p?.members) ? p.members : []
+    const me = members.find((m) => normEmail(m?.email) === normEmail(email))
+    if (me && (me.role === "owner" || me.role === "editor")) return true
+  }
+  return false
+}
+
+// ---------- GET ----------
 export async function GET(_req, { params }) {
   try {
     const session = await getServerSession().catch(() => null)
@@ -55,62 +74,62 @@ export async function GET(_req, { params }) {
     const { slug } = params || {}
     let doc = null
 
-    // 1) tenta carregar; se der erro, continua com doc=null
     try {
       doc = (await carregarFamilia(slug)) || null
     } catch (e) {
-      console.error("carregarFamilia falhou, criando padrão:", e)
+      console.error("[GET] carregarFamilia falhou:", e)
       doc = null
     }
 
-    // 2) se não existe, cria padrão e tenta salvar
     if (!doc || typeof doc !== "object") {
+      // cria doc padrão com me como owner
       doc = makeDefaultDoc(me)
       try {
-        await salvarFamilia(slug, doc)
+        await salvarFamilia(slug, { ...doc, slug })
       } catch (e) {
-        console.error("salvarFamilia (primeira criação) falhou:", e)
-        // mesmo que falhe persistir agora, retornamos o doc para a UI não travar
+        console.error("[GET] salvarFamilia (criação) falhou:", e)
       }
       return Response.json(doc)
     }
 
-    // 3) garante ao menos 1 projeto e me como membro owner
-    let changed = false
-    if (!Array.isArray(doc.projects) || doc.projects.length === 0) {
-      doc = makeDefaultDoc(me)
-      changed = true
-    } else {
-      let hasMe = false
-      const fixed = doc.projects.map((p) => {
-        const members = Array.isArray(p?.members) ? p.members : []
-        const meIn = members.find((m) => normEmail(m?.email) === me)
-        if (meIn) hasMe = true
-        return { ...p, members }
-      })
-      if (!hasMe) {
-        fixed[0] = {
-          ...fixed[0],
-          members: [{ email: me, role: "owner" }, ...(fixed[0].members || [])],
-        }
-        doc.projects = fixed
-        changed = true
-      } else {
-        doc.projects = fixed
-      }
-    }
+    // saneia estrutura
+    const base = sanitizeDoc(doc)
 
-    if (changed) {
+    // garante que exista ao menos um projeto
+    if (base.projects.length === 0) {
+      const created = makeDefaultDoc(me)
       try {
-        await salvarFamilia(slug, doc)
+        await salvarFamilia(slug, { ...created, slug })
       } catch (e) {
-        console.error("salvarFamilia (ajuste de membros) falhou:", e)
+        console.error("[GET] salvarFamilia (fallback sem projetos) falhou:", e)
+      }
+      return Response.json(created)
+    }
+
+    // garante que o usuário esteja como membro (owner) em algum projeto
+    let isMember = false
+    const fixed = base.projects.map((p) => {
+      const members = Array.isArray(p?.members) ? p.members : []
+      const meIn = members.find((m) => normEmail(m?.email) === me)
+      if (meIn) isMember = true
+      return { ...p, members }
+    })
+    let finalDoc = { ...base, projects: fixed, updatedAt: new Date().toISOString() }
+    if (!isMember) {
+      finalDoc.projects[0] = {
+        ...finalDoc.projects[0],
+        members: [{ email: me, role: "owner" }, ...(finalDoc.projects[0].members || [])],
+      }
+      try {
+        await salvarFamilia(slug, { ...finalDoc, slug })
+      } catch (e) {
+        console.error("[GET] salvarFamilia (injeta owner) falhou:", e)
       }
     }
 
-    return Response.json(doc)
+    return Response.json(finalDoc)
   } catch (err) {
-    console.error("GET /api/family error:", err)
+    console.error("GET /api/family error (fatal):", err)
     return new Response(JSON.stringify({ error: "Falha ao carregar família" }), {
       status: 500,
       headers: { "content-type": "application/json" },
@@ -118,11 +137,7 @@ export async function GET(_req, { params }) {
   }
 }
 
-/**
- * PUT /api/family/[slug]
- * - Se houver members em qualquer projeto, apenas owner/editor podem salvar.
- * - Se não houver members, libera (migração).
- */
+// ---------- PUT ----------
 export async function PUT(req, { params }) {
   try {
     const session = await getServerSession().catch(() => null)
@@ -135,36 +150,63 @@ export async function PUT(req, { params }) {
     }
 
     const { slug } = params || {}
-    const body = await req.json()
-
-    const projects = Array.isArray(body?.projects) ? body.projects : []
-    const anyWithMembers = projects.some(
-      (p) => Array.isArray(p?.members) && p.members.length > 0
-    )
-
-    let allowed = !anyWithMembers
-    if (!allowed) {
-      for (const p of projects) {
-        const members = Array.isArray(p?.members) ? p.members : []
-        const mine = members.find((m) => normEmail(m?.email) === me)
-        if (mine && (mine.role === "owner" || mine.role === "editor")) {
-          allowed = true
-          break
-        }
-      }
+    let body
+    try {
+      body = await req.json()
+    } catch (e) {
+      return new Response(JSON.stringify({ error: "JSON inválido" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      })
     }
 
-    if (!allowed) {
+    // saneia a estrutura recebida
+    const base = sanitizeDoc(body)
+
+    // regra de autorização:
+    // - se não houver members em nenhum projeto => libera (migração)
+    // - se houver, precisa ser owner/editor em ALGUM projeto
+    const anyWithMembers = base.projects.some(
+      (p) => Array.isArray(p?.members) && p.members.length > 0
+    )
+    if (anyWithMembers && !hasWriteAccess(base.projects, me)) {
       return new Response(JSON.stringify({ error: "Sem permissão para salvar" }), {
         status: 403,
         headers: { "content-type": "application/json" },
       })
     }
 
-    await salvarFamilia(slug, body)
+    // metadados úteis
+    const toSave = {
+      ...base,
+      slug,
+      updatedAt: new Date().toISOString(),
+    }
+
+    try {
+      await salvarFamilia(slug, toSave)
+    } catch (e) {
+      // Aqui está o ponto que estava dando 500 — vamos devolver
+      // a mensagem real para você ver o motivo (ex.: credenciais/Redis/Google).
+      console.error("[PUT] salvarFamilia falhou:", e)
+      const hint =
+        "Verifique as variáveis de ambiente usadas por salvarFamilia (ex.: REDIS_URL / credenciais Google) e o shape do documento."
+      return new Response(
+        JSON.stringify({
+          error: "Falha ao salvar",
+          message: String(e?.message || e),
+          hint,
+        }),
+        {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        }
+      )
+    }
+
     return Response.json({ ok: true })
   } catch (err) {
-    console.error("PUT /api/family error:", err)
+    console.error("PUT /api/family error (fatal):", err)
     return new Response(JSON.stringify({ error: "Falha ao salvar" }), {
       status: 500,
       headers: { "content-type": "application/json" },
