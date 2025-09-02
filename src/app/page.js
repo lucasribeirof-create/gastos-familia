@@ -1,6 +1,6 @@
 "use client"
 
-export const dynamic = "force-dynamic" // impede SSG/ISR nesta página
+export const dynamic = "force-dynamic"
 
 import { useEffect } from "react"
 import { useRouter } from "next/navigation"
