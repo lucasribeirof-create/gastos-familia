@@ -1,13 +1,8 @@
 // src/app/dashboard/page.js
 "use client"
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useSession, signOut } from "next-auth/react"
-import { useRouter } from "next/navigation"
-import { carregarFamilia, salvarFamilia } from "../actions"
-
-// === Gráficos (recharts)
 import {
-  PieChart, Pie, Tooltip, ResponsiveContainer,
+  PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
   LineChart, Line, XAxis, YAxis, CartesianGrid, Legend
 } from "recharts"
 
@@ -18,6 +13,19 @@ const monthKey = (dateStr) => (dateStr ? String(dateStr).slice(0,7) : "")
 const monthLabel = (yyyyMM) => (/^\d{4}-\d{2}$/.test(yyyyMM) ? `${yyyyMM.slice(5,7)}/${yyyyMM.slice(0,4)}` : yyyyMM || "")
 const todayYYYYMM = () => new Date().toISOString().slice(0,7)
 const firstDayOfMonth = (yyyyMM) => `${yyyyMM}-01`
+
+// ====== Cores para a Pizza (cores estáveis por categoria)
+const PIE_COLORS = [
+  "#6366F1", "#10B981", "#F59E0B", "#EF4444", "#3B82F6",
+  "#8B5CF6", "#06B6D4", "#F43F5E", "#84CC16", "#F97316",
+  "#22C55E", "#A855F7", "#0EA5E9", "#EAB308"
+]
+function colorFor(name = "") {
+  let h = 0
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0
+  const idx = Math.abs(h) % PIE_COLORS.length
+  return PIE_COLORS[idx]
+}
 
 /* ===================== Page (proteção por login) ===================== */
 export default function Page() {
@@ -712,9 +720,14 @@ function GastosApp({ user, onSignOut }) {
             <ResponsiveContainer>
               {chartType === "pie" ? (
                 <PieChart>
-                  <Tooltip formatter={(val)=>currency(Number(val))} />
-                  <Pie data={pieData} dataKey="value" nameKey="name" outerRadius={100} label />
-                </PieChart>
+  <Tooltip formatter={(val)=>currency(Number(val))} />
+  <Legend />
+  <Pie data={pieData} dataKey="value" nameKey="name" outerRadius={100} label>
+    {pieData.map((entry) => (
+      <Cell key={`cell-${entry.name}`} fill={colorFor(entry.name)} />
+    ))}
+  </Pie>
+</PieChart>
               ) : (
                 <LineChart data={lineData}>
                   <CartesianGrid strokeDasharray="3 3" />
