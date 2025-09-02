@@ -2,8 +2,8 @@
 export const dynamic = "force-dynamic"
 
 import { getServerSession } from "next-auth"
-// ⚠️ Caminho corrigido: de "../../auth/..." para "../auth/..."
-import { authOptions } from "../auth/[...nextauth]/route"
+// caminho CORRETO (duas pastas acima até /api, depois /auth):
+import { authOptions } from "../../auth/[...nextauth]/route"
 import { carregarFamilia, salvarFamilia } from "@/app/actions"
 
 function normEmail(v) {
@@ -39,7 +39,7 @@ function makeDefaultDoc(ownerEmail) {
 
 /**
  * GET /api/family/[slug]
- * - Requer usuário logado.
+ * - Requer login (email da sessão).
  * - Se não existir doc, cria com o usuário como OWNER, salva e retorna.
  */
 export async function GET(_req, { params }) {
@@ -60,7 +60,7 @@ export async function GET(_req, { params }) {
       doc = makeDefaultDoc(me)
       await salvarFamilia(slug, doc)
     } else {
-      // garante ao menos um projeto e o usuário membro (owner)
+      // garante ao menos um projeto e o usuário como membro
       if (!Array.isArray(doc.projects) || doc.projects.length === 0) {
         doc = makeDefaultDoc(me)
         await salvarFamilia(slug, doc)
