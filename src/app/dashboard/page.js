@@ -1,7 +1,7 @@
 "use client"
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import * as NextAuth from "next-auth/react"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { carregarFamilia, salvarFamilia } from "../actions"
 
 import {
@@ -39,16 +39,10 @@ export default function Page() {
   const sess = NextAuth?.useSession ? NextAuth.useSession() : { data: null, status: "unauthenticated" }
   const { data: session, status } = sess
   const router = useRouter()
+  const search = useSearchParams()
 
-  // ---- Tema ----
-  const [theme, setTheme] = useState("dark")
-  useEffect(() => {
-    const saved = localStorage.getItem("theme")
-    const prefersDark = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
-    const initial = saved || (prefersDark ? "dark" : "light")
-    setTheme(initial)
-    document.documentElement.classList.toggle("dark", initial === "dark")
-  }, [])
+  // ---- Tema (toggle) ----
+  const [theme, setTheme] = useState(typeof document !== "undefined" && document.documentElement.classList.contains("dark") ? "dark" : "light")
   const toggleTheme = () => {
     const next = theme === "dark" ? "light" : "dark"
     setTheme(next)
@@ -70,8 +64,8 @@ export default function Page() {
   // ----- Documento (nuvem) -----
   const [people, setPeople] = useState([])
   const [categories, setCategories] = useState(["Mercado", "Carro", "Aluguel", "Lazer"])
-  const [projects, setProjects] = useState([]) // {id,name,type,start,end,status}
-  const [expenses, setExpenses] = useState([]) // {id, who, category(name), amount, desc, date, projectId}
+  const [projects, setProjects] = useState([]) // {id,name,type,start,end,status,members?}
+  const [expenses, setExpenses] = useState([]) // {id, who, category, amount, desc, date, projectId}
 
   // ----- Projeto atual -----
   const [selectedProjectId, setSelectedProjectId] = useState("")
@@ -92,7 +86,11 @@ export default function Page() {
   const [desc, setDesc] = useState("")
   const [date, setDate] = useState(isoToday())
 
-  /* ===================== Carregar (com migração de formato) ===================== */
+  // ----- Compartilhamento (UI) -----
+  const [inviteEmail, setInviteEmail] = useState("")
+  const [inviteRole, setInviteRole] = useState("editor") // owner | editor | viewer
+
+  /* ===================== Carregar (com migração + slug via link) ===================== */
   useEffect(() => {
     if (status === "unauthenticated") {
       router.push("/api/auth/signin")
@@ -100,9 +98,13 @@ export default function Page() {
     }
     if (status !== "authenticated") return
 
+    // Se veio fam=? no link, priorize e salve
+    const linkFam = search?.get("fam")
     const email = session?.user?.email || ""
     const autoSlug = slugFromEmail(email)
-    const savedSlug = localStorage.getItem("family:slug") || autoSlug
+    const savedSlug = (linkFam || localStorage.getItem("family:slug") || autoSlug)
+
+    if (linkFam) localStorage.setItem("family:slug", linkFam)
 
     ;(async () => {
       setError("")
@@ -130,8 +132,16 @@ export default function Page() {
             type: "monthly",
             start: firstDayOfMonth(todayYYYYMM()),
             end: "",
-            status: "open"
+            status: "open",
+            members: [{ email, role: "owner" }]
           }]
+        } else {
+          // garante members como array
+          nextProjects = nextProjects.map(p => ({ ...p, members: Array.isArray(p.members) ? p.members : [] }))
+          // se não houver owner em nenhum, garanta o owner atual (retrocompat)
+          if (!nextProjects.some(p => (p.members||[]).some(m => m.role === "owner"))) {
+            nextProjects[0].members = [...(nextProjects[0].members||[]), { email, role: "owner" }]
+          }
         }
 
         // Despesas (traduz categoria id -> name)
@@ -154,7 +164,6 @@ export default function Page() {
           }
         })
 
-        // Aplicar estado
         setPeople(nextPeople)
         setCategories(nextCategories)
         setProjects(nextProjects)
@@ -174,7 +183,7 @@ export default function Page() {
         setError("Falha ao carregar seus dados. Tente novamente.")
       }
     })()
-  }, [status, session, router])
+  }, [status, session, router, search])
 
   /* ===================== Salvar ===================== */
   const savingRef = useRef(false)
@@ -220,7 +229,7 @@ export default function Page() {
     })
   }
 
-  /* ===================== Categorias (strings) ===================== */
+  /* ===================== Categorias ===================== */
   function addCategoryLocal(name) {
     const n = (name || "").trim()
     if (!n) return
@@ -245,9 +254,10 @@ export default function Page() {
     setNewProjectEnd("")
   }
   function createProject() {
+    const email = session?.user?.email || ""
     const name = (newProjectName || "").trim() || "Projeto"
     const id = "proj-"+Math.random().toString(36).slice(2,8)
-    const p = { id, name, type: newProjectType, start: newProjectStart || null, end: newProjectEnd || "", status: "open" }
+    const p = { id, name, type: newProjectType, start: newProjectStart || null, end: newProjectEnd || "", status: "open", members: [{ email, role: "owner" }] }
     setDocAndSave(d => { d.projects = [...d.projects, p]; return d })
     setSelectedProjectId(id)
     localStorage.setItem(`project:${slug}`, id)
@@ -265,6 +275,34 @@ export default function Page() {
     }
   }
 
+  /* ======= Compartilhar (members por projeto) ======= */
+  function addMember() {
+    const email = (inviteEmail || "").trim().toLowerCase()
+    if (!email) return
+    if (!selectedProject) return
+    setDocAndSave(d => {
+      d.projects = d.projects.map(p => {
+        if (p.id !== selectedProject.id) return p
+        const members = Array.isArray(p.members) ? p.members : []
+        if (members.some(m => m.email === email)) return p
+        return { ...p, members: [...members, { email, role: inviteRole }] }
+      })
+      return d
+    })
+    setInviteEmail("")
+  }
+  function removeMember(email) {
+    if (!selectedProject) return
+    setDocAndSave(d => {
+      d.projects = d.projects.map(p => {
+        if (p.id !== selectedProject.id) return p
+        const members = (p.members||[]).filter(m => m.email !== email)
+        return { ...p, members }
+      })
+      return d
+    })
+  }
+
   /* ===================== Lançar despesas ===================== */
   function addExpense() {
     if (!selectedProject) { alert("Selecione/Crie um projeto."); return }
@@ -276,17 +314,14 @@ export default function Page() {
   }
   function removeExpense(id) { setDocAndSave(d => { d.expenses = d.expenses.filter(e => e.id !== id); return d }) }
 
-  /* ===================== Derivados por Projeto & Período ===================== */
+  /* ===================== Derivados ===================== */
   const projectExpenses = useMemo(() => expenses.filter(e => e.projectId === selectedProjectId), [expenses, selectedProjectId])
-
-  // meses + "ALL" (Total do projeto)
   const months = useMemo(() => {
     const set = new Set(projectExpenses.map(e => monthKey(e.date)))
     const arr = [...set].filter(Boolean).sort()
     return ["ALL", ...arr]
   }, [projectExpenses])
 
-  // filtro principal
   const filtered = useMemo(() => {
     return projectExpenses
       .filter(e => (period === "ALL" ? true : monthKey(e.date) === period))
@@ -294,11 +329,9 @@ export default function Page() {
       .filter(e => (onlyPerson ? e.who === onlyPerson : true))
   }, [projectExpenses, period, onlyCategory, onlyPerson])
 
-  // ordenações auxiliares
   const filteredDateAsc = useMemo(() => [...filtered].sort((a,b)=> a.date.localeCompare(b.date)), [filtered])
   const filteredDateDesc = useMemo(() => [...filtered].sort((a,b)=> b.date.localeCompare(a.date)), [filtered])
 
-  // agrupado por categoria (para o modo "cat")
   const groupedByCategory = useMemo(() => {
     const map = new Map()
     filteredDateAsc.forEach(e => {
@@ -359,14 +392,16 @@ export default function Page() {
     return arr
   }, [projectExpenses])
 
-  /* ===================== UI (ordem mantida) ===================== */
+  /* ===================== UI ===================== */
   if (status !== "authenticated") return <div className="p-6">Redirecionando para login…</div>
-
-  // util tailwind de cartão “chanfrado”
   const card = "rounded-2xl border border-slate-200/60 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm"
 
+  const shareLink = typeof window !== "undefined"
+    ? `${window.location.origin}/dashboard?fam=${slug}`
+    : `/dashboard?fam=${slug}`
+
   return (
-    <div className="p-4 sm:p-6 max-w-6xl mx-auto text-sm text-slate-900 dark:text-slate-100">
+    <div className="p-4 sm:p-6 max-w-6xl mx-auto text-sm">
       {/* Header */}
       <div className="flex items-center justify-between gap-4">
         <div>
@@ -381,7 +416,7 @@ export default function Page() {
         </div>
       </div>
 
-      {/* 1) PROJETO */}
+      {/* 1) PROJETO + Compartilhar */}
       <div className={`mt-4 p-3 ${card}`}>
         <div className="flex flex-wrap items-center gap-2">
           <label className="text-xs">Projeto:</label>
@@ -397,6 +432,55 @@ export default function Page() {
             {selectedProject && selectedProject.status==="closed" && <button className="px-3 py-2 rounded-xl border" onClick={()=>reopenProject(selectedProject.id)}>Reabrir</button>}
             {selectedProject && <button className="px-3 py-2 rounded-xl border border-red-600 text-red-600" onClick={()=>removeProject(selectedProject.id)}>Excluir</button>}
           </div>
+        </div>
+
+        {/* Compartilhar */}
+        <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-3">
+            <div className="font-semibold mb-2">Compartilhar com pessoas</div>
+            <div className="flex gap-2">
+              <input className="px-3 py-2 rounded-xl border dark:bg-slate-900 flex-1" placeholder="email@dominio.com" value={inviteEmail} onChange={e=>setInviteEmail(e.target.value)} />
+              <select className="px-3 py-2 rounded-xl border dark:bg-slate-900" value={inviteRole} onChange={e=>setInviteRole(e.target.value)}>
+                <option value="editor">Editor</option>
+                <option value="viewer">Viewer</option>
+                <option value="owner">Owner</option>
+              </select>
+              <button className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700" onClick={addMember}>Adicionar</button>
+            </div>
+            <div className="mt-3 text-xs opacity-70">
+              Dica: quem receber o convite também pode abrir direto o link do projeto (abaixo).
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-3">
+            <div className="font-semibold mb-2">Link do projeto</div>
+            <div className="flex gap-2">
+              <input readOnly className="px-3 py-2 rounded-xl border dark:bg-slate-900 flex-1" value={shareLink} />
+              <button className="px-4 py-2 rounded-xl border" onClick={()=>{
+                navigator.clipboard?.writeText(shareLink)
+              }}>Copiar</button>
+            </div>
+            <div className="mt-2 text-xs opacity-70">
+              Ao abrir este link, o outro usuário passa a usar o mesmo “fam”.
+            </div>
+          </div>
+        </div>
+
+        {/* Lista de membros */}
+        <div className="mt-3 rounded-xl border border-slate-200 dark:border-slate-800 p-3">
+          <div className="font-semibold mb-2">Membros do projeto</div>
+          {selectedProject && (selectedProject.members?.length ? (
+            <ul className="space-y-1">
+              {selectedProject.members.map((m, idx) => (
+                <li key={idx} className="flex items-center justify-between">
+                  <span>{m.email} — <span className="uppercase text-xs opacity-70">{m.role}</span></span>
+                  <button className="text-xs text-red-600" onClick={()=>removeMember(m.email)}>remover</button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="text-xs opacity-70">Nenhum membro ainda.</div>
+          ))}
         </div>
 
         {showNewProject && (
@@ -536,7 +620,7 @@ export default function Page() {
         {orderMode === "cat" ? (
           <div className="space-y-4">
             {groupedByCategory.map(([catName, arr]) => (
-              <div key={catName} className={`${card}`}>
+              <div key={catName} className={card}>
                 <div className="px-4 py-2 font-semibold bg-slate-50 dark:bg-slate-900/50 rounded-t-2xl border-b border-slate-200 dark:border-slate-800">
                   {catName} — {currency(arr.reduce((s, e)=>s+(e.amount||0), 0))}
                 </div>
