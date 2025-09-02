@@ -20,6 +20,15 @@ const monthLabel = (yyyyMM) => (/^\d{4}-\d{2}$/.test(yyyyMM) ? `${yyyyMM.slice(5
 const hash36 = (str) => { let h = 5381; for (let i = 0; i < str.length; i++) h = ((h << 5) + h) + str.charCodeAt(i); return (h >>> 0).toString(36); };
 const slugFromEmail = (email) => `fam-${hash36(String(email || "").trim().toLowerCase())}`;
 
+// cor única e estável por categoria (HSL baseado em hash)
+function hslFromString(s) {
+  const base = parseInt(hash36(s), 36);
+  const h = base % 360;
+  const sat = 55 + (base % 10); // 55–64
+  const light = 45 + (base % 8); // 45–52
+  return `hsl(${h} ${sat}% ${light}%)`;
+}
+
 function ChartsErrorBoundary({ children }) {
   const [crashed, setCrashed] = useState(false);
   return crashed ? (
@@ -81,6 +90,11 @@ export function Dashboard() {
   // convite
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState("editor");
+
+  // criação de projeto
+  const [newProjectName, setNewProjectName] = useState("");
+  const [newProjectType, setNewProjectType] = useState("monthly"); // monthly | custom
+  const [newProjectStart, setNewProjectStart] = useState(isoToday());
 
   const myEmail = (session?.user?.email || "").toLowerCase();
   const selectedProject = useMemo(
@@ -199,6 +213,7 @@ export function Dashboard() {
     if (category === cat) setCategory("");
   };
 
+  // membros (compartilhamento simples)
   const addMember = () => {
     const email = (inviteEmail || "").trim().toLowerCase();
     if (!email || !selectedProject) return;
@@ -221,6 +236,43 @@ export function Dashboard() {
         return { ...p, members: (p.members || []).filter((m) => (m.email || "").toLowerCase() !== email) };
       });
       return d;
+    });
+  };
+
+  // =============== projetos: criar / remover ===============
+  const createProject = () => {
+    const name = newProjectName.trim();
+    if (!name) return;
+    const id = "proj-" + Math.random().toString(36).slice(2, 8);
+    const proj = {
+      id,
+      name,
+      type: newProjectType,
+      start: newProjectStart || isoToday(),
+      end: "",
+      status: "open",
+      members: [{ email: myEmail, role: "owner" }],
+    };
+    setDocAndSave((d) => {
+      const next = { ...d, projects: [...d.projects, proj] };
+      return next;
+    });
+    setSelectedProjectId(id);
+    setNewProjectName("");
+  };
+
+  const deleteProject = () => {
+    if (!selectedProject) return;
+    if (myRole !== "owner") { alert("Apenas o owner pode excluir o projeto."); return; }
+    if (!confirm(`Remover o projeto "${selectedProject.name}"? Esta ação também remove as despesas desse projeto.`)) return;
+
+    setDocAndSave((d) => {
+      const remaining = d.projects.filter((p) => p.id !== selectedProject.id);
+      const expRemaining = d.expenses.filter((e) => e.projectId !== selectedProject.id);
+      // escolhe outro projeto se existir
+      const nextSelected = remaining[0]?.id || "";
+      setSelectedProjectId(nextSelected);
+      return { ...d, projects: remaining, expenses: expRemaining };
     });
   };
 
@@ -367,16 +419,49 @@ export function Dashboard() {
 
       {/* Projeto + Compartilhar */}
       <div className={`mt-4 p-3 ${card}`}>
-        <div className="flex flex-wrap items-center gap-2">
-          <label className="text-xs">Projeto:</label>
-          <select className="px-3 py-2 rounded-xl border dark:border-slate-700 dark:bg-slate-900"
-                  value={selectedProjectId}
-                  onChange={(e) => setSelectedProjectId(e.target.value)}>
-            {projects.map((p) => <option key={p.id} value={p.id}>{p.name} {p.status === "closed" ? "(fechado)" : ""}</option>)}
-          </select>
-        </div>
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
+          {/* Seleção + ações projeto */}
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-3">
+            <div className="font-semibold mb-2">Projeto</div>
+            <div className="flex gap-2">
+              <select className="px-3 py-2 rounded-xl border dark:border-slate-700 dark:bg-slate-900 flex-1"
+                      value={selectedProjectId}
+                      onChange={(e) => setSelectedProjectId(e.target.value)}>
+                {projects.map((p) => <option key={p.id} value={p.id}>{p.name} {p.status === "closed" ? "(fechado)" : ""}</option>)}
+              </select>
+              {myRole === "owner" && (
+                <button onClick={deleteProject}
+                        className="px-3 py-2 rounded-xl border border-red-300 text-red-700 hover:bg-red-50 dark:hover:bg-red-900/10">
+                  Excluir
+                </button>
+              )}
+            </div>
 
-        <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
+            {myRole === "owner" && (
+              <div className="mt-3">
+                <div className="text-xs font-medium mb-1">Criar novo projeto</div>
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                  <input className="px-3 py-2 rounded-xl border dark:bg-slate-900 md:col-span-2" placeholder="Nome (ex.: Viagem SP)"
+                         value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} />
+                  <select className="px-3 py-2 rounded-xl border dark:bg-slate-900"
+                          value={newProjectType} onChange={(e) => setNewProjectType(e.target.value)}>
+                    <option value="monthly">Mensal</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                  <input type="date" className="px-3 py-2 rounded-xl border dark:bg-slate-900"
+                         value={newProjectStart} onChange={(e) => setNewProjectStart(e.target.value)} />
+                </div>
+                <div className="mt-2">
+                  <button onClick={createProject}
+                          className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50">
+                    Criar projeto
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Compartilhar */}
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-3">
             <div className="font-semibold mb-2">Compartilhar com pessoas</div>
             <div className="flex gap-2">
@@ -389,10 +474,6 @@ export function Dashboard() {
               </select>
               <button disabled={readOnly} className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
                       onClick={addMember}>Adicionar</button>
-            </div>
-
-            <div className="mt-3 text-xs opacity-70">
-              Envie o link do projeto para o convidado: ele deve logar com o **mesmo e-mail**.
             </div>
 
             <div className="mt-3 flex flex-wrap gap-2">
@@ -408,12 +489,14 @@ export function Dashboard() {
             </div>
           </div>
 
+          {/* Link */}
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 p-3">
             <div className="font-semibold mb-2">Link do projeto</div>
             <div className="flex gap-2">
               <input readOnly className="px-3 py-2 rounded-xl border dark:bg-slate-900 flex-1" value={shareLink} />
               <button className="px-4 py-2 rounded-xl border" onClick={() => navigator.clipboard?.writeText(shareLink)}>Copiar</button>
             </div>
+            <div className="mt-2 text-xs opacity-70">Envie esse link para os convidados (eles precisam logar com o mesmo e-mail).</div>
           </div>
         </div>
       </div>
@@ -421,7 +504,7 @@ export function Dashboard() {
       {/* Pessoas / Categorias */}
       <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
         <div className={`p-3 ${card}`}>
-          <h3 className="font-semibold mb-2">1) Pessoas do grupo</h3>
+          <h3 className="font-semibold mb-2">Pessoas do grupo</h3>
           <div className="flex gap-2">
             <input id="newPerson" disabled={readOnly} className="px-3 py-2 rounded-xl border dark:bg-slate-900 flex-1" placeholder="Nome (ex.: Ana)" />
             <button disabled={readOnly} className="px-4 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50" onClick={addPerson}>Adicionar</button>
@@ -438,7 +521,7 @@ export function Dashboard() {
         </div>
 
         <div className={`p-3 ${card}`}>
-          <h3 className="font-semibold mb-2">2) Categorias</h3>
+          <h3 className="font-semibold mb-2">Categorias</h3>
           <div className="flex gap-2">
             <input id="newCat" disabled={readOnly} className="px-3 py-2 rounded-xl border dark:bg-slate-900 flex-1" placeholder="Nova categoria (ex.: Remédios)" />
             <button disabled={readOnly} className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50" onClick={addCategoryLocal}>Adicionar</button>
@@ -457,7 +540,7 @@ export function Dashboard() {
 
       {/* Adicionar gasto */}
       <div className={`mt-4 p-3 ${card}`}>
-        <h3 className="font-semibold mb-2">3) Adicionar gasto</h3>
+        <h3 className="font-semibold mb-2">Adicionar gasto</h3>
         <p className="text-xs opacity-70 mb-3">Adicione o gasto aqui 😉</p>
         <div className="grid grid-cols-1 md:grid-cols-6 gap-2">
           <input type="date" disabled={readOnly} className="px-3 py-2 rounded-xl border dark:bg-slate-900" value={date} onChange={(e) => setDate(e.target.value)} />
@@ -658,7 +741,7 @@ export function Dashboard() {
                 <PieChart>
                   <Pie dataKey="value" data={porCategoria} cx="50%" cy="50%" outerRadius={100} label>
                     {porCategoria.map((entry, idx) => (
-                      <Cell key={`c-${idx}`} />
+                      <Cell key={`c-${idx}`} fill={hslFromString(entry.name)} />
                     ))}
                   </Pie>
                   <Tooltip formatter={(v) => currency(Number(v))} />
