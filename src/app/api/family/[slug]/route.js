@@ -1,214 +1,115 @@
-// src/app/api/family/[slug]/route.js
-export const dynamic = "force-dynamic"
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/app/api/auth/[...nextauth]/route";
+import { loadFamily, saveFamily } from "@/utils/db";
+import { assertCanEditProject, assertCanViewProject } from "@/utils/authz";
 
-// ⚠️ IMPORTA O PATCH DE FETCH RELATIVO → ABSOLUTO (antes de tudo que possa usar fetch)
-import "@/app/api/_lib/fetch-abs"
+export const dynamic = "force-dynamic";
 
-import { getServerSession } from "next-auth"
-import { carregarFamilia, salvarFamilia } from "@/app/actions"
-
-// ---------- helpers ----------
-const normEmail = (v) => (v || "").toString().trim().toLowerCase()
-const todayYYYYMM = () => new Date().toISOString().slice(0, 7)
-const firstDayOfMonth = (ym) => `${ym}-01`
-
-function makeDefaultDoc(ownerEmail) {
-  const pid = "proj-" + Math.random().toString(36).slice(2, 8)
+function defaultDoc(ownerEmail) {
   return {
     people: [],
     categories: ["Mercado", "Carro", "Aluguel", "Lazer"],
     projects: [
       {
-        id: pid,
+        id: "proj-" + Math.random().toString(36).slice(2, 8),
         name: "Geral",
         type: "monthly",
-        start: firstDayOfMonth(todayYYYYMM()),
+        start: new Date().toISOString().slice(0, 10),
         end: "",
         status: "open",
-        members: [{ email: ownerEmail, role: "owner" }],
+        members: ownerEmail ? [{ email: ownerEmail.toLowerCase(), role: "owner" }] : [],
       },
     ],
     expenses: [],
     updatedAt: new Date().toISOString(),
+  };
+}
+
+function getActiveProject(doc, projectId) {
+  const project = (doc.projects || []).find((p) => p.id === projectId);
+  if (!project) {
+    const err = new Error("Projeto não encontrado");
+    err.status = 404;
+    throw err;
   }
+  return project;
 }
 
-function sanitizeDoc(doc) {
-  const safe = doc && typeof doc === "object" ? doc : {}
-  const people = Array.isArray(safe.people) ? safe.people : []
-  const categories = Array.isArray(safe.categories) ? safe.categories : []
-  let projects = Array.isArray(safe.projects) ? safe.projects : []
-  const expenses = Array.isArray(safe.expenses) ? safe.expenses : []
-
-  projects = projects.map((p) => ({
-    id: p?.id || "proj-" + Math.random().toString(36).slice(2, 8),
-    name: String(p?.name || "Projeto"),
-    type: p?.type || "custom",
-    start: p?.start || firstDayOfMonth(todayYYYYMM()),
-    end: p?.end || "",
-    status: p?.status || "open",
-    members: Array.isArray(p?.members) ? p.members : [],
-  }))
-
-  return { people, categories, projects, expenses }
-}
-
-function hasWriteAccess(projects, email) {
-  for (const p of projects) {
-    const members = Array.isArray(p?.members) ? p.members : []
-    const me = members.find((m) => normEmail(m?.email) === normEmail(email))
-    if (me && (me.role === "owner" || me.role === "editor")) return true
-  }
-  return false
-}
-
-// ---------- GET ----------
 export async function GET(_req, { params }) {
   try {
-    const session = await getServerSession().catch(() => null)
-    const me = normEmail(session?.user?.email)
-    if (!me) {
-      return new Response(JSON.stringify({ error: "Não autenticado" }), {
-        status: 401,
-        headers: { "content-type": "application/json" },
-      })
+    const session = await getServerSession(authOptions);
+    const userEmail = session?.user?.email?.toLowerCase();
+
+    if (!userEmail) {
+      return Response.json({ error: "Não autenticado" }, { status: 401 });
     }
 
-    const { slug } = params || {}
-    let doc = null
+    const { slug } = params;
+    let doc = await loadFamily(slug);
 
-    try {
-      doc = (await carregarFamilia(slug)) || null
-    } catch (e) {
-      console.error("[GET] carregarFamilia falhou:", e)
-      doc = null
+    if (!doc) {
+      doc = defaultDoc(userEmail);
+      await saveFamily(slug, doc);
     }
-
-    if (!doc || typeof doc !== "object") {
-      // cria doc padrão com me como owner
-      doc = makeDefaultDoc(me)
-      try {
-        await salvarFamilia(slug, { ...doc, slug })
-      } catch (e) {
-        console.error("[GET] salvarFamilia (criação) falhou:", e)
-      }
-      return Response.json(doc)
+    
+    // AQUI: verifica se o usuário pode ver o projeto antes de retornar.
+    const projectIds = new Set(doc.projects.map(p => p.id));
+    const activeProjectId = projectIds.has(params.projectId) ? params.projectId : doc.projects[0]?.id;
+    
+    if (activeProjectId) {
+      const activeProject = getActiveProject(doc, activeProjectId);
+      assertCanViewProject(activeProject, userEmail);
+    } else {
+      // Se não há projetos, permite o acesso para que o usuário possa criar um
     }
-
-    // saneia estrutura
-    const base = sanitizeDoc(doc)
-
-    // garante que exista ao menos um projeto
-    if (base.projects.length === 0) {
-      const created = makeDefaultDoc(me)
-      try {
-        await salvarFamilia(slug, { ...created, slug })
-      } catch (e) {
-        console.error("[GET] salvarFamilia (fallback sem projetos) falhou:", e)
-      }
-      return Response.json(created)
-    }
-
-    // garante que o usuário esteja como membro (owner) em algum projeto
-    let isMember = false
-    const fixed = base.projects.map((p) => {
-      const members = Array.isArray(p?.members) ? p.members : []
-      const meIn = members.find((m) => normEmail(m?.email) === me)
-      if (meIn) isMember = true
-      return { ...p, members }
-    })
-    let finalDoc = { ...base, projects: fixed, updatedAt: new Date().toISOString() }
-    if (!isMember) {
-      finalDoc.projects[0] = {
-        ...finalDoc.projects[0],
-        members: [{ email: me, role: "owner" }, ...(finalDoc.projects[0].members || [])],
-      }
-      try {
-        await salvarFamilia(slug, { ...finalDoc, slug })
-      } catch (e) {
-        console.error("[GET] salvarFamilia (injeta owner) falhou:", e)
-      }
-    }
-
-    return Response.json(finalDoc)
-  } catch (err) {
-    console.error("GET /api/family error (fatal):", err)
-    return new Response(JSON.stringify({ error: "Falha ao carregar família" }), {
-      status: 500,
-      headers: { "content-type": "application/json" },
-    })
+    
+    return Response.json(doc);
+  } catch (e) {
+    const status = e.status || 500;
+    return Response.json({ error: e.message || "Falha ao carregar família" }, { status });
   }
 }
 
-// ---------- PUT ----------
 export async function PUT(req, { params }) {
   try {
-    const session = await getServerSession().catch(() => null)
-    const me = normEmail(session?.user?.email)
-    if (!me) {
-      return new Response(JSON.stringify({ error: "Não autenticado" }), {
-        status: 401,
-        headers: { "content-type": "application/json" },
-      })
+    const session = await getServerSession(authOptions);
+    const userEmail = session?.user?.email?.toLowerCase();
+
+    if (!userEmail) {
+      return Response.json({ error: "Não autenticado" }, { status: 401 });
     }
 
-    const { slug } = params || {}
-    let body
-    try {
-      body = await req.json()
-    } catch {
-      return new Response(JSON.stringify({ error: "JSON inválido" }), {
-        status: 400,
-        headers: { "content-type": "application/json" },
-      })
-    }
+    const { slug } = params;
+    const body = await req.json();
 
-    // saneia a estrutura recebida
-    const base = sanitizeDoc(body)
-
-    // regra de autorização:
-    const anyWithMembers = base.projects.some(
-      (p) => Array.isArray(p?.members) && p.members.length > 0
-    )
-    if (anyWithMembers && !hasWriteAccess(base.projects, me)) {
-      return new Response(JSON.stringify({ error: "Sem permissão para salvar" }), {
-        status: 403,
-        headers: { "content-type": "application/json" },
-      })
-    }
-
-    // metadados úteis
-    const toSave = {
-      ...base,
-      slug,
+    const doc = {
+      people: Array.isArray(body.people) ? body.people : [],
+      categories: Array.isArray(body.categories) ? body.categories : [],
+      projects: Array.isArray(body.projects) ? body.projects : [],
+      expenses: Array.isArray(body.expenses) ? body.expenses : [],
       updatedAt: new Date().toISOString(),
+    };
+
+    // AQUI: valida a permissão no projeto ativo que está sendo alterado.
+    // O body.activeProjectId deve vir do cliente.
+    const activeProject = (doc.projects || []).find(p => p.id === body.activeProjectId);
+
+    if (activeProject) {
+      assertCanEditProject(activeProject, userEmail);
+    } else {
+      // Se não houver projeto ativo ou for o primeiro save, a validação é menos rigorosa
+      const canEditAny = doc.projects.some(p => {
+        try { assertCanEditProject(p, userEmail); return true; } catch { return false; }
+      });
+      if (!canEditAny) {
+        return Response.json({ error: "Proibido - Sem permissão de edição" }, { status: 403 });
+      }
     }
 
-    try {
-      await salvarFamilia(slug, toSave)
-    } catch (e) {
-      console.error("[PUT] salvarFamilia falhou:", e)
-      const hint =
-        "Alguma camada de persistência falhou. Se seu salvarFamilia usa fetch('/api/...'), agora já está com URL absoluta via patch. Também verifique REDIS_URL/Google creds."
-      return new Response(
-        JSON.stringify({
-          error: "Falha ao salvar",
-          message: String(e?.message || e),
-          hint,
-        }),
-        {
-          status: 500,
-          headers: { "content-type": "application/json" },
-        }
-      )
-    }
-
-    return Response.json({ ok: true })
-  } catch (err) {
-    console.error("PUT /api/family error (fatal):", err)
-    return new Response(JSON.stringify({ error: "Falha ao salvar" }), {
-      status: 500,
-      headers: { "content-type": "application/json" },
-    })
+    await saveFamily(slug, doc);
+    return Response.json({ ok: true });
+  } catch (e) {
+    const status = e.status || 500;
+    return Response.json({ error: e.message || "Falha ao salvar" }, { status });
   }
 }

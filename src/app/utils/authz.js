@@ -1,22 +1,34 @@
-// src/utils/authz.js
-export function roleOf(userEmail, project) {
-  if (!userEmail || !project) return "viewer"
-  if (project.owner === userEmail) return "owner"
-  const m = (project.members || []).find(x => x.email === userEmail)
-  return m?.role || "viewer"
+export function roleForEmail(project, email) {
+  const em = String(email || "").toLowerCase();
+  const members = Array.isArray(project?.members) ? project.members : [];
+  const m = members.find((x) => String(x?.email || "").toLowerCase() === em);
+  if (m?.role) return m.role;
+  return "none";
 }
 
-export function canManageMembers(userEmail, project) {
-  return roleOf(userEmail, project) === "owner"
+export function assertCanManageMembers(project, email) {
+  const role = roleForEmail(project, email);
+  if (role !== "owner") {
+    const err = new Error("Proibido - Apenas o dono pode gerenciar membros");
+    err.status = 403;
+    throw err;
+  }
 }
 
-// "editor" pode editar despesas/categorias e propriedades básicas do projeto (exceto owner/members)
-export function canEditProject(userEmail, project) {
-  const r = roleOf(userEmail, project)
-  return r === "owner" || r === "editor"
+export function assertCanEditProject(project, email) {
+  const role = roleForEmail(project, email);
+  if (!(role === "owner" || role === "editor")) {
+    const err = new Error("Proibido - Sem permissão de edição");
+    err.status = 403;
+    throw err;
+  }
 }
 
-// "viewer" pode ver
-export function canViewProject(userEmail, project) {
-  return !!roleOf(userEmail, project)
+export function assertCanViewProject(project, email) {
+  const role = roleForEmail(project, email);
+  if (role === "none") {
+    const err = new Error("Proibido - Sem permissão para visualizar");
+    err.status = 403;
+    throw err;
+  }
 }
