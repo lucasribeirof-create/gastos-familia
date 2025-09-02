@@ -1,7 +1,7 @@
 "use client"
 
 export const dynamic = "force-dynamic"
-export const revalidate = false
+export const revalidate = 0
 export const fetchCache = "force-no-store"
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"

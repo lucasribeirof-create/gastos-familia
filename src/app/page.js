@@ -1,7 +1,8 @@
 "use client"
 
+// Força modo dinâmico e zera SSG/ISR
 export const dynamic = "force-dynamic"
-export const revalidate = false
+export const revalidate = 0
 export const fetchCache = "force-no-store"
 
 import { useEffect } from "react"
