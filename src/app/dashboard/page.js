@@ -18,40 +18,24 @@ const monthLabel = (yyyyMM) => (/^\d{4}-\d{2}$/.test(yyyyMM) ? `${yyyyMM.slice(5
 const todayYYYYMM = () => new Date().toISOString().slice(0,7)
 const isoToday = () => new Date().toISOString().slice(0,10)
 const firstDayOfMonth = (ym) => `${ym}-01`
-const lastDayOfMonth = (ym) => {
-  const [y,m] = ym.split("-").map(Number)
-  const d = new Date(y, m, 0) // último dia
-  return d.toISOString().slice(0,10)
-}
 const randId = (p) => (p||"id")+"-"+Math.random().toString(36).slice(2,9)
-function hash36(str) {
-  let h = 5381
-  for (let i = 0; i < str.length; i++) h = ((h << 5) + h) + str.charCodeAt(i) // djb2
-  return (h >>> 0).toString(36)
-}
-const slugFromEmail = (email) => {
-  const norm = String(email || "").trim().toLowerCase()
-  return `fam-${hash36(norm)}`
-}
+function hash36(str) { let h = 5381; for (let i=0;i<str.length;i++) h=((h<<5)+h)+str.charCodeAt(i); return (h>>>0).toString(36) }
+const slugFromEmail = (email) => `fam-${hash36(String(email||"").trim().toLowerCase())}`
 
-/* ===================== Error Boundary (evita derrubar a página) ===================== */
+/* ===================== Error Boundary ===================== */
 class ChartsErrorBoundary extends React.Component {
   constructor(props){ super(props); this.state = { hasError: false } }
   static getDerivedStateFromError(){ return { hasError: true } }
   componentDidCatch(err, info){ console.error("Charts crashed:", err, info) }
   render(){
     if (this.state.hasError) {
-      return (
-        <div className="h-72 grid place-items-center text-sm text-red-600">
-          Erro ao renderizar os gráficos. Recarregue a página ou ajuste os filtros.
-        </div>
-      )
+      return <div className="h-72 grid place-items-center text-sm text-red-600">Erro ao renderizar os gráficos. Recarregue a página ou ajuste os filtros.</div>
     }
     return this.props.children
   }
 }
 
-/* ===================== Page (proteção por login) ===================== */
+/* ===================== Page ===================== */
 export default function Page() {
   const sess = NextAuth?.useSession ? NextAuth.useSession() : { data: null, status: "unauthenticated" }
   const { data: session, status } = sess
@@ -71,14 +55,13 @@ export default function Page() {
 
   // ----- Documento (nuvem) -----
   const [people, setPeople] = useState([])
-  const [categories, setCategories] = useState(["Mercado", "Carro", "Aluguel", "Lazer"])
+  const [categories, setCategories] = useState(["Mercado", "Carro", "Aluguel", "Lazer"])  // <<< strings
   const [projects, setProjects] = useState([]) // {id,name,type,start,end,status, ...}
-  const [expenses, setExpenses] = useState([]) // {id, who, category, amount, desc, date, projectId}
+  const [expenses, setExpenses] = useState([]) // {id, who, category(name), amount, desc, date, projectId}
 
   // ----- Projeto atual -----
   const [selectedProjectId, setSelectedProjectId] = useState("")
   const selectedProject = useMemo(() => projects.find(p => p.id === selectedProjectId) || null, [projects, selectedProjectId])
-  const isClosed = selectedProject?.status === "closed"
   const readOnly = false // projeto fechado continua editável
 
   // ----- Criar projeto -----
@@ -93,7 +76,7 @@ export default function Page() {
   const [category, setCategory] = useState("")
   const [amount, setAmount] = useState("")
   const [desc, setDesc] = useState("")
-  const [date, setDate] = useState(new Date().toISOString().slice(0,10))
+  const [date, setDate] = useState(isoToday())
 
   // ======= carregar =======
   useEffect(() => {
@@ -105,8 +88,6 @@ export default function Page() {
 
     const email = session?.user?.email || ""
     const autoSlug = slugFromEmail(email)
-
-    // usa slug do localStorage se existir; senão usa o do email
     const savedSlug = localStorage.getItem("family:slug") || autoSlug
 
     ;(async () => {
@@ -114,25 +95,61 @@ export default function Page() {
       try {
         const fromCloud = await carregarFamilia(savedSlug)
         const doc = fromCloud || {}
-        let nextProjects = Array.isArray(doc.projects) ? doc.projects : []
 
-        // migra se não houver projetos
+        // ---------- MIGRAÇÃO DE FORMATO ----------
+        // 1) Pessoas
+        const nextPeople = Array.isArray(doc.people) ? doc.people : []
+
+        // 2) Categorias:
+        //    - se vierem objetos {id,name,...}, convertemos para array de strings (name)
+        //    - guardamos um mapa id->name para traduzir despesas
+        let nextCategories = Array.isArray(doc.categories) ? doc.categories : []
+        let idToName = new Map()
+        if (nextCategories.length && typeof nextCategories[0] === "object") {
+          nextCategories.forEach(c => { if (c && c.id && c.name) idToName.set(c.id, c.name) })
+          nextCategories = nextCategories.map(c => c?.name).filter(Boolean)
+        }
+
+        // 3) Projetos (mantém como está; se não houver, cria padrão)
+        let nextProjects = Array.isArray(doc.projects) ? doc.projects : []
         if (nextProjects.length === 0) {
-          const defaultProject = {
+          nextProjects = [{
             id: "proj-"+Math.random().toString(36).slice(2,8),
             name: "Projeto",
             type: "monthly",
             start: firstDayOfMonth(todayYYYYMM()),
             end: "",
             status: "open"
-          }
-          nextProjects = [defaultProject]
+          }]
         }
 
-        setPeople(Array.isArray(doc.people) ? doc.people : [])
-        setCategories(Array.isArray(doc.categories) ? doc.categories : [])
+        // 4) Despesas:
+        //    - se categoria vier como ID, converte para name via idToName
+        //    - garante campos obrigatórios
+        let nextExpenses = Array.isArray(doc.expenses) ? doc.expenses : []
+        nextExpenses = nextExpenses.map(e => {
+          let cat = e.category
+          if (typeof cat === "string" && idToName.size && idToName.has(cat)) {
+            cat = idToName.get(cat)
+          } else if (cat && typeof cat === "object" && cat.name) {
+            cat = cat.name
+          }
+          return {
+            id: e.id || randId("exp"),
+            who: e.who || "",
+            category: cat || "",
+            amount: Number(e.amount)||0,
+            desc: e.desc || "",
+            date: e.date || isoToday(),
+            projectId: e.projectId || nextProjects[0].id
+          }
+        })
+
+        // ---------- Aplicar no estado ----------
+        setPeople(nextPeople)
+        setCategories(nextCategories)
         setProjects(nextProjects)
-        setExpenses(Array.isArray(doc.expenses) ? doc.expenses : [])
+        setExpenses(nextExpenses)
 
         setSlug(savedSlug)
         localStorage.setItem("family:slug", savedSlug)
@@ -142,6 +159,7 @@ export default function Page() {
         setPeriod(todayYYYYMM())
         setOnlyCategory("")
         setOnlyPerson("")
+
       } catch (e) {
         console.error(e)
         setError("Falha ao carregar seus dados. Tente novamente.")
@@ -157,19 +175,14 @@ export default function Page() {
     setSaving(true)
     setError("")
     try {
-      let next = {
-        people, categories, projects, expenses
-      }
-      // aplicar mutação
+      let next = { people, categories, projects, expenses }
       next = typeof fn === "function" ? fn({ ...next }) : next
 
-      // salvar estado local
       setPeople(next.people)
       setCategories(next.categories)
       setProjects(next.projects)
       setExpenses(next.expenses)
 
-      // persistir (server action)
       salvarFamilia(slug, next)
         .then(() => setLastSavedAt(new Date().toISOString()))
         .catch((e)=> { console.error(e); setError("Falha ao salvar.") })
@@ -198,7 +211,7 @@ export default function Page() {
     })
   }
 
-  /* ===================== Categorias ===================== */
+  /* ===================== Categorias (strings) ===================== */
   function addCategoryLocal(name) {
     const n = (name || "").trim()
     if (!n) return
@@ -206,14 +219,9 @@ export default function Page() {
     setDocAndSave(d => { d.categories = [...d.categories, n]; return d })
   }
   function removeCategory(n) {
-    if (!selectedProject) {
-      if (!confirm(`Remover a categoria "${n}" de TODOS os projetos? Todas as despesas dessa categoria serão apagadas.`)) return
-      setDocAndSave(d => { d.categories = d.categories.filter(c => c !== n); d.expenses = d.expenses.filter(e => e.category !== n); return d })
-      return
-    }
-    const choice = prompt(`Remover a categoria "${n}"\n1 = Remover só deste projeto (${selectedProject.name})\n2 = Remover de TODOS os projetos`)
+    const choice = prompt(`Remover a categoria "${n}"\n1 = Remover só deste projeto (${selectedProject?.name || "atual"})\n2 = Remover de TODOS os projetos`)
     if (choice === "1") {
-      setDocAndSave(d => { d.categories = d.categories.filter(c => c !== n); d.expenses = d.expenses.filter(e => !(e.category === n && e.projectId === selectedProject.id)); return d })
+      setDocAndSave(d => { d.categories = d.categories.filter(c => c !== n); d.expenses = d.expenses.filter(e => !(e.category === n && e.projectId === selectedProjectId)); return d })
     } else if (choice === "2") {
       setDocAndSave(d => { d.categories = d.categories.filter(c => c !== n); d.expenses = d.expenses.filter(e => e.category !== n); return d })
     }
@@ -230,21 +238,14 @@ export default function Page() {
   function createProject() {
     const name = (newProjectName || "").trim() || "Projeto"
     const id = "proj-"+Math.random().toString(36).slice(2,8)
-    const p = {
-      id, name, type: newProjectType, start: newProjectStart || null,
-      end: newProjectEnd || "", status: "open"
-    }
+    const p = { id, name, type: newProjectType, start: newProjectStart || null, end: newProjectEnd || "", status: "open" }
     setDocAndSave(d => { d.projects = [...d.projects, p]; return d })
     setSelectedProjectId(id)
     localStorage.setItem(`project:${slug}`, id)
     setShowNewProject(false)
   }
-  function closeProject(id) {
-    setDocAndSave(d => { d.projects = d.projects.map(p => p.id === id ? { ...p, status: "closed" } : p); return d })
-  }
-  function reopenProject(id) {
-    setDocAndSave(d => { d.projects = d.projects.map(p => p.id === id ? { ...p, status: "open" } : p); return d })
-  }
+  function closeProject(id) { setDocAndSave(d => { d.projects = d.projects.map(p => p.id === id ? { ...p, status: "closed" } : p); return d }) }
+  function reopenProject(id) { setDocAndSave(d => { d.projects = d.projects.map(p => p.id === id ? { ...p, status: "open" } : p); return d }) }
   function removeProject(id) {
     if (!confirm("Remover este projeto? As despesas permanecerão, mas sem vínculo com este projeto.")) return
     setDocAndSave(d => { d.projects = d.projects.filter(p => p.id !== id); return d })
@@ -260,7 +261,7 @@ export default function Page() {
     if (!selectedProject) { alert("Selecione/Crie um projeto."); return }
     const value = Number(String(amount).replace(",", "."))
     if (!who || !category || !Number.isFinite(value) || value <= 0 || !date) return
-    const e = { id: "exp-" + Math.random().toString(36).slice(2,9), who, category, amount: value, desc: (desc || "").trim(), date, projectId: selectedProjectId }
+    const e = { id: randId("exp"), who, category, amount: value, desc: (desc || "").trim(), date, projectId: selectedProjectId }
     setDocAndSave(d => { d.expenses = [...d.expenses, e]; return d })
     setWho(""); setCategory(""); setAmount(""); setDesc("")
   }
@@ -298,16 +299,15 @@ export default function Page() {
     return [...m.entries()].map(([name, value]) => ({ name, value })).sort((a,b)=>b.value-a.value)
   }, [filtered])
 
-  // “acertos” (rateio) simples: cada um deveria pagar a mesma fração do total filtrado
+  // “acertos” (rateio) simples
   const settlements = useMemo(() => {
     const peopleSet = new Set(filtered.map(e => e.who))
     const arr = [...peopleSet]
     const share = arr.length ? total / arr.length : 0
     const paid = Object.fromEntries(arr.map(p => [p, 0]))
     filtered.forEach(e => paid[e.who] += (e.amount||0))
-    const delta = arr.map(p => ({ person: p, diff: paid[p] - share })) // + pagou a mais / - pagou a menos
+    const delta = arr.map(p => ({ person: p, diff: paid[p] - share }))
 
-    // Quem deve para quem: positivos recebem, negativos pagam
     const receivers = delta.filter(d => d.diff > 0).sort((a,b)=>b.diff-a.diff)
     const payers = delta.filter(d => d.diff < 0).sort((a,b)=>a.diff-b.diff)
 
@@ -332,7 +332,6 @@ export default function Page() {
       map.set(mk, (map.get(mk)||0) + (e.amount||0))
     })
     const arr = [...map.entries()].sort((a,b)=>a[0].localeCompare(b[0])).map(([month, total]) => ({ month, total }))
-    // MM3
     for (let i=0;i<arr.length;i++){
       const w = arr.slice(Math.max(0,i-2), i+1).map(x=>x.total)
       arr[i].mm3 = w.length ? (w.reduce((a,b)=>a+b,0)/w.length) : arr[i].total
@@ -412,7 +411,11 @@ export default function Page() {
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <label className="text-xs">Período:</label>
         <div className="flex items-center gap-1">
-          {months.map(m => (
+          {useMemo(()=> {
+            // garante que o botão "Total" sempre aparece
+            const m = months.includes("ALL") ? months : ["ALL", ...months]
+            return m
+          }, [months]).map(m => (
             <button key={m} className={`px-2 py-1 rounded border ${period===m?"bg-slate-200 dark:bg-slate-800":""}`} onClick={()=>setPeriod(m)}>
               {m==="ALL" ? "Total" : monthLabel(m)}
             </button>
