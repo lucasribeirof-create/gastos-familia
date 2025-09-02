@@ -7,7 +7,6 @@ if (!url) {
 }
 
 export const redis = new Redis(url, {
-  // funciona com redis:// e rediss:// (TLS)
   maxRetriesPerRequest: 2,
   enableReadyCheck: true,
   lazyConnect: false,

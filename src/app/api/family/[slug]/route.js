@@ -1,9 +1,9 @@
 // src/app/api/family/[slug]/route.js
 import { NextResponse } from "next/server"
-import { redis } from "../../../../../utils/db"
+import { redis } from "../../../../utils/db"   // <<<< AJUSTE: 4 níveis, não 5
 
-export const runtime = "nodejs"            // garante Node runtime
-export const dynamic = "force-dynamic"     // sem cache
+export const runtime = "nodejs"
+export const dynamic = "force-dynamic"
 
 const KEY = (slug) => `family:${slug}`
 
@@ -33,13 +33,8 @@ export async function PUT(req, { params }) {
   try {
     const { slug } = params
     const body = await req.json().catch(() => ({}))
-    // Aceita o documento inteiro sem exigir activeProjectId.
     const doc = normalizeDoc(body)
-
     await redis.set(KEY(slug), JSON.stringify(doc))
-    // opcional: TTL de 1 ano -> habilite se quiser expirar
-    // await redis.set(KEY(slug), JSON.stringify(doc), "EX", 60*60*24*365)
-
     return NextResponse.json({ ok: true })
   } catch (e) {
     console.error("PUT /api/family error:", e)
