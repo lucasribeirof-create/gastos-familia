@@ -1,16 +1,14 @@
-// /src/app/api/family/[slug]/projects/[projectId]/members/route.js
+// src/app/api/family/[slug]/projects/[projectId]/members/route.js
 import { NextResponse } from "next/server"
 import { getToken } from "next-auth/jwt"
 import Redis from "ioredis"
-import { canManageMembers } from "@/utils/authz"
+import { canManageMembers } from "../../../../../../utils/authz"
 
 const redis = new Redis(process.env.REDIS_URL)
 const key = (slug) => `family:${slug}`
-
 function nowISO(){ return new Date().toISOString() }
 
 export async function POST(req, { params }) {
-  // Add member
   const token = await getToken({ req })
   if (!token?.email) return NextResponse.json({ error: "unauthorized" }, { status: 401 })
 
@@ -38,7 +36,6 @@ export async function POST(req, { params }) {
 }
 
 export async function PATCH(req, { params }) {
-  // Change role
   const token = await getToken({ req })
   if (!token?.email) return NextResponse.json({ error: "unauthorized" }, { status: 401 })
 
@@ -64,7 +61,6 @@ export async function PATCH(req, { params }) {
 }
 
 export async function DELETE(req, { params }) {
-  // Remove member
   const token = await getToken({ req })
   if (!token?.email) return NextResponse.json({ error: "unauthorized" }, { status: 401 })
 

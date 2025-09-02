@@ -1,4 +1,4 @@
-// /src/utils/authz.js
+// src/utils/authz.js
 export function roleOf(userEmail, project) {
   if (!userEmail || !project) return "viewer"
   if (project.owner === userEmail) return "owner"

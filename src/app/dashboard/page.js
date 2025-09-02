@@ -1,20 +1,19 @@
+// src/app/dashboard/page.js
 "use client"
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useState } from "react"
 import { useSession } from "next-auth/react"
 import { PieChart, Pie, Cell, Tooltip as RTooltip, Legend as RLegend, LineChart, Line, XAxis, YAxis, CartesianGrid, BarChart, Bar } from "recharts"
-import { roleOf } from "@/utils/authz"
+import { roleOf } from "../../utils/authz"
 
-// ===================== Helpers =====================
+// Helpers
 const currency = (v) => (Number(v)||0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})
 const fmtDate = (iso) => { try { return new Date(iso).toLocaleDateString("pt-BR") } catch { return "" } }
-const fmtHora = (iso) => { try { return new Date(iso).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"}) } catch { return "" } }
 const monthKey = (dateStr) => (dateStr ? String(dateStr).slice(0,7) : "")
 const monthLabel = (yyyyMM) => (/^\d{4}-\d{2}$/.test(yyyyMM) ? `${yyyyMM.slice(5,7)}/${yyyyMM.slice(0,4)}` : yyyyMM || "")
 const todayYYYYMM = () => new Date().toISOString().slice(0,7)
 const isoToday = () => new Date().toISOString().slice(0,10)
 const hashId = (s)=>{ let h=2166136261>>>0; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619)} return "id_"+(h>>>0).toString(36) }
 const colorForId = (id)=>{ let h=0; for(let i=0;i<id.length;i++){ h=(h*31+id.charCodeAt(i))%360 } return `hsl(${h} 70% 48%)` }
-
 function stableCat(categories, name) {
   const found = categories.find(c => c.name === name)
   if (found) return found
@@ -22,7 +21,6 @@ function stableCat(categories, name) {
   return { id, name, color: colorForId(id), order: categories.length, parentId: null }
 }
 
-// ===================== Component =====================
 export default function DashboardPage() {
   const { data: session, status } = useSession()
   const [slug, setSlug] = useState(null)
@@ -34,18 +32,18 @@ export default function DashboardPage() {
   const [showShare, setShowShare] = useState(false)
   const [theme, setTheme] = useState("dark")
 
-  // lançamento form
+  // form
   const [fDate, setFDate] = useState(isoToday())
   const [fWho, setFWho] = useState("")
   const [fCat, setFCat] = useState("")
   const [fDesc, setFDesc] = useState("")
   const [fVal, setFVal] = useState("")
 
-  // slug derivado do email (como seu fluxo anterior)
+  // slug do email
   useEffect(() => {
     if (status === "authenticated" && session?.user?.email) {
       const email = session.user.email.toLowerCase()
-      const s = "fam-" + hashId(email).slice(3) // legível e estável
+      const s = "fam-" + hashId(email).slice(3)
       setSlug(s)
     }
   }, [status, session])
@@ -63,43 +61,27 @@ export default function DashboardPage() {
     document.documentElement.classList.toggle("dark", next === "dark")
   }
 
-  // carregar doc
   const loadDoc = useCallback(async () => {
     if (!slug) return
     const res = await fetch(`/api/family/${slug}`, { cache: "no-store" })
     const j = await res.json()
     setDoc(j)
     if (!activeProjectId && j.projects?.length) setActiveProjectId(j.projects[0].id)
-    // defaults de selects
     if (j.people?.length && !fWho) setFWho(j.people[0])
     if (j.categories?.length && !fCat) setFCat(j.categories[0]?.id)
   }, [slug]) // eslint-disable-line
-
   useEffect(() => { loadDoc() }, [loadDoc])
 
-  // role
   const myRole = useMemo(() => {
     if (!doc || !session?.user?.email) return "viewer"
     const p = doc.projects?.find(p => p.id === activeProjectId)
     return roleOf(session.user.email, p)
   }, [doc, session, activeProjectId])
 
-  // helpers de dados
   const categoriesById = useMemo(() => {
     const map = new Map()
     ;(doc?.categories || []).forEach(c => map.set(c.id, c))
     return map
-  }, [doc])
-
-  const catChildren = useMemo(() => {
-    const byParent = {}
-    (doc?.categories||[]).forEach(c => {
-      const k = c.parentId || "_root"
-      ;(byParent[k] ||= []).push(c)
-    })
-    // ordena por order
-    Object.values(byParent).forEach(list => list.sort((a,b)=> (a.order??0)-(b.order??0)))
-    return byParent
   }, [doc])
 
   const expensesActive = useMemo(() => {
@@ -136,7 +118,6 @@ export default function DashboardPage() {
       map.set(mk, (map.get(mk)||0) + (Number(e.amount)||0))
     })
     const arr = Array.from(map.entries()).sort((a,b)=>a[0].localeCompare(b[0])).map(([m,v])=>({ month:m, total:v }))
-    // média móvel 3M
     for (let i=0;i<arr.length;i++){
       const w = arr.slice(Math.max(0,i-2), i+1).map(x=>x.total)
       const mm3 = w.length ? (w.reduce((a,b)=>a+b,0)/w.length) : arr[i].total
@@ -162,7 +143,6 @@ export default function DashboardPage() {
     return months.map(m => ({ month:m, ...people.reduce((acc,p)=>{ acc[p]=map[m][p]||0; return acc },{}) }))
   }, [doc, activeProjectId])
 
-  // ===== Salvar (PUT) - patch por projeto =====
   const savePatch = useCallback(async (patch) => {
     if (!slug) return
     const res = await fetch(`/api/family/${slug}`, {
@@ -178,7 +158,6 @@ export default function DashboardPage() {
     }
   }, [slug, activeProjectId, loadDoc])
 
-  // ====== UI: Lançar despesa (Enter confirma) ======
   const canEdit = myRole === "owner" || myRole === "editor"
   const addExpense = async () => {
     if (!canEdit) return
@@ -199,7 +178,6 @@ export default function DashboardPage() {
     }
   }
 
-  // ====== UI: Categorias turbinadas ======
   const addCategory = async (name, parentId=null) => {
     if (!canEdit) return
     const exists = (doc.categories||[]).find(c => c.name.toLowerCase() === name.toLowerCase())
@@ -224,7 +202,7 @@ export default function DashboardPage() {
   }
   const moveCat = async (id, dir) => {
     if (!canEdit) return
-    const list = [...(doc.categories||[])].sort((a,b)=> (a.order??0)-(b.order??0))
+    const list = [...(doc.categories||[])].sort((a,b)=>(a.order??0)-(b.order??0))
     const idx = list.findIndex(c=>c.id===id)
     if (idx<0) return
     const j = dir==="up" ? Math.max(0, idx-1) : Math.min(list.length-1, idx+1)
@@ -232,7 +210,6 @@ export default function DashboardPage() {
     await savePatch({ categories: list })
   }
 
-  // ====== UI: Compartilhar (membros) ======
   const project = doc?.projects?.find(p => p.id === activeProjectId)
   const [inviteEmail, setInviteEmail] = useState("")
   const [inviteRole, setInviteRole] = useState("viewer")
@@ -269,7 +246,6 @@ export default function DashboardPage() {
     await loadDoc()
   }
 
-  // ====== Gráficos ======
   const pieData = useMemo(() => {
     return Object.entries(totals.byCat).map(([catId, v]) => {
       const c = categoriesById.get(catId)
@@ -277,7 +253,6 @@ export default function DashboardPage() {
     }).sort((a,b)=> b.value-a.value)
   }, [totals, categoriesById])
 
-  // ====== Render ======
   if (status !== "authenticated") {
     return <div className="p-6">Faça login para continuar.</div>
   }
@@ -285,7 +260,6 @@ export default function DashboardPage() {
 
   return (
     <div className="p-4 sm:p-6 max-w-6xl mx-auto text-sm text-slate-900 dark:text-slate-100">
-      {/* Header */}
       <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-xl font-bold">Gastos em Família</h1>
@@ -301,7 +275,6 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Projetos + Mês */}
       <div className="mt-4 flex flex-wrap gap-2 items-center">
         <label className="text-xs">Projeto:</label>
         <select className="px-2 py-1 rounded border dark:bg-slate-900" value={activeProjectId||""} onChange={e=>{ setActiveProjectId(e.target.value); setOnlyCategoryId(null) }}>
@@ -319,7 +292,6 @@ export default function DashboardPage() {
         </select>
       </div>
 
-      {/* Lançar despesa */}
       <div className="mt-6 grid grid-cols-1 md:grid-cols-6 gap-2">
         <input aria-label="Data" disabled={!canEdit} className="px-2 py-2 rounded border dark:bg-slate-900" type="date" value={fDate} onChange={e=>setFDate(e.target.value)} />
         <select aria-label="Pessoa" disabled={!canEdit} className="px-2 py-2 rounded border dark:bg-slate-900" value={fWho} onChange={e=>setFWho(e.target.value)}>
@@ -339,7 +311,6 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Categorias */}
       <div className="mt-6">
         <div className="flex items-center justify-between">
           <h2 className="font-semibold">Categorias</h2>
@@ -379,7 +350,6 @@ export default function DashboardPage() {
                   </button>
                 </div>
               </div>
-              {/* Subcategoria */}
               <div className="mt-2 flex items-center gap-2">
                 <label className="text-xs opacity-70">Sub de:</label>
                 <select className="px-2 py-1 rounded border dark:bg-slate-900" value={c.parentId||""} onChange={e=>setParent(c.id, e.target.value || null)} disabled={!canEdit}>
@@ -394,7 +364,6 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Lista de despesas */}
       <div className="mt-6">
         <h2 className="font-semibold">Despesas {viewScope==="month" ? `— ${monthLabel(month)}` : "(projeto inteiro)"} — Total: {currency(totals.total)}</h2>
         <div className="mt-2 overflow-x-auto">
@@ -426,9 +395,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Gráficos */}
       <div className="mt-8 grid md:grid-cols-2 gap-6">
-        {/* Pizza */}
         <div className="rounded border dark:border-slate-700 p-3">
           <h3 className="font-semibold mb-2">Gastos por Categoria</h3>
           <PieChart width={380} height={280}>
@@ -440,7 +407,6 @@ export default function DashboardPage() {
           </PieChart>
         </div>
 
-        {/* Linha com MM3 e MoM */}
         <div className="rounded border dark:border-slate-700 p-3">
           <h3 className="font-semibold mb-2">Evolução Mensal (Total)</h3>
           <LineChart width={420} height={280} data={monthsSeries}>
@@ -448,13 +414,15 @@ export default function DashboardPage() {
             <XAxis dataKey="month" tickFormatter={monthLabel} />
             <YAxis />
             <RTooltip formatter={(v, n, p)=> n==="mm3" ? [currency(v), "Média Móvel 3M"] : [currency(v), "Total"]}
-              labelFormatter={(l)=> `Mês: ${monthLabel(l)} | Variação MoM: ${p?.payload?.mom!=null ? p.payload.mom.toFixed(1)+"%" : "—"}`} />
+              labelFormatter={(l, p)=> {
+                const mom = p?.payload?.[0]?.payload?.mom
+                return `Mês: ${monthLabel(l)} | Variação MoM: ${mom!=null ? mom.toFixed(1)+"%" : "—"}`
+              }} />
             <Line type="monotone" dataKey="total" dot strokeWidth={2} />
             <Line type="monotone" dataKey="mm3" strokeDasharray="5 5" />
           </LineChart>
         </div>
 
-        {/* Barras empilhadas por pessoa */}
         <div className="rounded border dark:border-slate-700 p-3 md:col-span-2">
           <h3 className="font-semibold mb-2">Gastos por Pessoa (mensal)</h3>
           <BarChart width={860} height={300} data={monthsByPerson}>
@@ -469,7 +437,6 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Modal Compartilhar */}
       {showShare && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50" role="dialog" aria-modal="true" aria-label="Compartilhar projeto">
           <div className="bg-white dark:bg-slate-900 rounded-xl p-4 w-full max-w-lg border dark:border-slate-700 shadow-xl">

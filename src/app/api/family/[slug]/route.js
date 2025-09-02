@@ -1,8 +1,8 @@
-// /src/app/api/family/[slug]/route.js
+// src/app/api/family/[slug]/route.js
 import { NextResponse } from "next/server"
 import { getToken } from "next-auth/jwt"
 import Redis from "ioredis"
-import { canEditProject, canManageMembers } from "@/utils/authz"
+import { canEditProject, canManageMembers } from "../../../../utils/authz"
 
 const redis = new Redis(process.env.REDIS_URL)
 const key = (slug) => `family:${slug}`
@@ -10,17 +10,12 @@ const key = (slug) => `family:${slug}`
 function nowISO(){ return new Date().toISOString() }
 
 // === Migração de schema ===
-// - Converte categories: string[] -> {id,name,color,parentId?,order}
-// - Garante project.owner e project.members
-// - Garante campos base
 function hashId(s){
-  // hash leve estável p/ id/cores; evita colidir com ids existentes que não são hash
   let h = 2166136261>>>0
   for (let i=0;i<s.length;i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) }
   return "id_"+(h>>>0).toString(36)
 }
 function colorForId(id){
-  // cor HSL estável baseada no id (0..360)
   let h = 0
   for (let i=0;i<id.length;i++){ h = (h*31 + id.charCodeAt(i)) % 360 }
   return `hsl(${h} 70% 48%)`
@@ -30,7 +25,7 @@ function migrateDocShape(doc, currentUserEmail) {
   const d = doc && typeof doc === "object" ? structuredClone(doc) : {}
 
   d.people = Array.isArray(d.people) ? d.people : []
-  // categories
+
   if (Array.isArray(d.categories)) {
     if (d.categories.length && typeof d.categories[0] === "string") {
       d.categories = d.categories.map((name, idx) => {
@@ -38,7 +33,6 @@ function migrateDocShape(doc, currentUserEmail) {
         return { id, name, color: colorForId(id), order: idx }
       })
     } else {
-      // normaliza cores e orders
       d.categories = d.categories.map((c, idx) => ({
         id: c.id || hashId("cat_old:"+c.name),
         name: c.name,
@@ -52,7 +46,6 @@ function migrateDocShape(doc, currentUserEmail) {
   }
 
   d.projects = Array.isArray(d.projects) ? d.projects : []
-  // cria 1 projeto default se não houver
   if (d.projects.length === 0) {
     const pid = hashId("proj:default")
     d.projects.push({
@@ -79,7 +72,7 @@ function applyPatch(oldDoc, patch, userEmail) {
   const project = (oldDoc.projects || []).find(p => p.id === activeProjectId)
   if (!project) throw new Error("Projeto ativo não encontrado")
 
-  // 1) MEMBERS: só owner pode alterar
+  // 1) MEMBERS: só owner pode alterar (aqui só aceitamos via rota dedicada; se vier no PUT, bloqueia)
   if (Array.isArray(patch.members)) {
     if (!canManageMembers(userEmail, project)) throw new Error("Sem permissão para gerenciar membros")
     project.members = patch.members
@@ -88,7 +81,7 @@ function applyPatch(oldDoc, patch, userEmail) {
   // 2) PROJECT fields (básicos): editor+
   if (patch.projectUpdate) {
     if (!canEditProject(userEmail, project)) throw new Error("Sem permissão para editar projeto")
-    const allowed = ["name","start","end","status"] // owner não é editável aqui
+    const allowed = ["name","start","end","status"]
     for (const k of allowed) {
       if (k in patch.projectUpdate) project[k] = patch.projectUpdate[k]
     }
@@ -97,7 +90,6 @@ function applyPatch(oldDoc, patch, userEmail) {
   // 3) CATEGORIES (globais): editor+
   if (Array.isArray(patch.categories)) {
     if (!canEditProject(userEmail, project)) throw new Error("Sem permissão para editar categorias")
-    // normaliza/ordena
     oldDoc.categories = patch.categories.map((c, idx) => ({
       id: c.id || hashId("cat:"+c.name),
       name: c.name,
@@ -129,14 +121,12 @@ export async function GET(req, { params }) {
   const { slug } = params
   const raw = await redis.get(key(slug))
   if (!raw) {
-    // cria doc vazio migrado
     const base = migrateDocShape({}, userEmail)
     await redis.set(key(slug), JSON.stringify(base))
     return NextResponse.json(base)
   }
   let doc = JSON.parse(raw || "{}")
   doc = migrateDocShape(doc, userEmail)
-  // persiste migração se mudou
   await redis.set(key(slug), JSON.stringify(doc))
   return NextResponse.json(doc)
 }
