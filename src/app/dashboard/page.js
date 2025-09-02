@@ -41,13 +41,29 @@ export default function Page() {
   const { data: session, status } = sess
   const router = useRouter()
 
-  // ---- preferências locais ----
+  // ---- Tema (fix: aplicar classe 'dark' corretamente) ----
   const [theme, setTheme] = useState("dark")
+  useEffect(() => {
+    // prioriza o que estava salvo; se não houver, usa preferência do SO
+    const saved = localStorage.getItem("theme")
+    const prefersDark = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+    const initial = saved || (prefersDark ? "dark" : "light")
+    setTheme(initial)
+    document.documentElement.classList.toggle("dark", initial === "dark")
+  }, [])
+  const toggleTheme = () => {
+    const next = theme === "dark" ? "light" : "dark"
+    setTheme(next)
+    localStorage.setItem("theme", next)
+    document.documentElement.classList.toggle("dark", next === "dark")
+  }
+
+  // ---- preferências locais ----
   const [slug, setSlug] = useState("")
   const [period, setPeriod] = useState(todayYYYYMM()) // yyyy-MM ou "ALL"
-  const [sortAsc, setSortAsc] = useState(false)
   const [onlyCategory, setOnlyCategory] = useState("") // filtro por categoria
   const [onlyPerson, setOnlyPerson] = useState("")     // filtro por pessoa
+  const [orderMode, setOrderMode] = useState("cat")    // "cat" | "date_asc" | "date_desc"
   const [chartType, setChartType] = useState("pizza")  // "pizza" | "linha"
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
@@ -55,8 +71,8 @@ export default function Page() {
 
   // ----- Documento (nuvem) -----
   const [people, setPeople] = useState([])
-  const [categories, setCategories] = useState(["Mercado", "Carro", "Aluguel", "Lazer"])  // <<< strings
-  const [projects, setProjects] = useState([]) // {id,name,type,start,end,status, ...}
+  const [categories, setCategories] = useState(["Mercado", "Carro", "Aluguel", "Lazer"])  // strings
+  const [projects, setProjects] = useState([]) // {id,name,type,start,end,status}
   const [expenses, setExpenses] = useState([]) // {id, who, category(name), amount, desc, date, projectId}
 
   // ----- Projeto atual -----
@@ -78,7 +94,7 @@ export default function Page() {
   const [desc, setDesc] = useState("")
   const [date, setDate] = useState(isoToday())
 
-  // ======= carregar =======
+  /* ===================== Carregar (com migração de formato) ===================== */
   useEffect(() => {
     if (status === "unauthenticated") {
       router.push("/api/auth/signin")
@@ -96,13 +112,10 @@ export default function Page() {
         const fromCloud = await carregarFamilia(savedSlug)
         const doc = fromCloud || {}
 
-        // ---------- MIGRAÇÃO DE FORMATO ----------
-        // 1) Pessoas
+        // Pessoas
         const nextPeople = Array.isArray(doc.people) ? doc.people : []
 
-        // 2) Categorias:
-        //    - se vierem objetos {id,name,...}, convertemos para array de strings (name)
-        //    - guardamos um mapa id->name para traduzir despesas
+        // Categorias (migra objetos -> strings)
         let nextCategories = Array.isArray(doc.categories) ? doc.categories : []
         let idToName = new Map()
         if (nextCategories.length && typeof nextCategories[0] === "object") {
@@ -110,7 +123,7 @@ export default function Page() {
           nextCategories = nextCategories.map(c => c?.name).filter(Boolean)
         }
 
-        // 3) Projetos (mantém como está; se não houver, cria padrão)
+        // Projetos
         let nextProjects = Array.isArray(doc.projects) ? doc.projects : []
         if (nextProjects.length === 0) {
           nextProjects = [{
@@ -123,9 +136,7 @@ export default function Page() {
           }]
         }
 
-        // 4) Despesas:
-        //    - se categoria vier como ID, converte para name via idToName
-        //    - garante campos obrigatórios
+        // Despesas (traduz categoria id -> name)
         let nextExpenses = Array.isArray(doc.expenses) ? doc.expenses : []
         nextExpenses = nextExpenses.map(e => {
           let cat = e.category
@@ -145,7 +156,7 @@ export default function Page() {
           }
         })
 
-        // ---------- Aplicar no estado ----------
+        // Aplicar estado
         setPeople(nextPeople)
         setCategories(nextCategories)
         setProjects(nextProjects)
@@ -159,7 +170,7 @@ export default function Page() {
         setPeriod(todayYYYYMM())
         setOnlyCategory("")
         setOnlyPerson("")
-
+        setOrderMode("cat")
       } catch (e) {
         console.error(e)
         setError("Falha ao carregar seus dados. Tente novamente.")
@@ -167,7 +178,7 @@ export default function Page() {
     })()
   }, [status, session, router])
 
-  // ======= salvar =======
+  /* ===================== Salvar ===================== */
   const savingRef = useRef(false)
   const setDocAndSave = useCallback((fn) => {
     if (savingRef.current) return
@@ -277,13 +288,29 @@ export default function Page() {
     return ["ALL", ...arr]
   }, [projectExpenses])
 
+  // filtro principal (período/pessoa/categoria)
   const filtered = useMemo(() => {
     return projectExpenses
       .filter(e => (period === "ALL" ? true : monthKey(e.date) === period))
       .filter(e => (onlyCategory ? e.category === onlyCategory : true))
       .filter(e => (onlyPerson ? e.who === onlyPerson : true))
-      .sort((a,b) => (sortAsc ? a.date.localeCompare(b.date) : b.date.localeCompare(a.date)))
-  }, [projectExpenses, period, onlyCategory, onlyPerson, sortAsc])
+  }, [projectExpenses, period, onlyCategory, onlyPerson])
+
+  // ordenações auxiliares
+  const filteredDateAsc = useMemo(() => [...filtered].sort((a,b)=> a.date.localeCompare(b.date)), [filtered])
+  const filteredDateDesc = useMemo(() => [...filtered].sort((a,b)=> b.date.localeCompare(a.date)), [filtered])
+
+  // agrupado por categoria (para o modo "cat")
+  const groupedByCategory = useMemo(() => {
+    const map = new Map()
+    filteredDateAsc.forEach(e => { // dentro de cada categoria, por data asc
+      const arr = map.get(e.category) || []
+      arr.push(e)
+      map.set(e.category, arr)
+    })
+    // ordena categorias pelo nome
+    return [...map.entries()].sort((a,b)=> String(a[0]).localeCompare(String(b[0])))
+  }, [filteredDateAsc])
 
   const total = useMemo(() => filtered.reduce((s, e) => s + (e.amount||0), 0), [filtered])
 
@@ -339,28 +366,26 @@ export default function Page() {
     return arr
   }, [projectExpenses])
 
-  /* ===================== UI ===================== */
+  /* ===================== UI (na ordem solicitada) ===================== */
   if (status !== "authenticated") return <div className="p-6">Redirecionando para login…</div>
 
   return (
     <div className="p-4 sm:p-6 max-w-6xl mx-auto text-sm text-slate-900 dark:text-slate-100">
+      {/* Header / Ações rápidas */}
       <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-xl font-bold">Gastos em Família</h1>
           <p className="text-xs opacity-70">Projeto: <b>{selectedProject?.name || "—"}</b></p>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={()=>{
-            const next = theme==="dark" ? "light" : "dark"
-            setTheme(next)
-            document.documentElement.classList.toggle("dark", next==="dark")
-            localStorage.setItem("theme", next)
-          }} className="px-3 py-1 rounded border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800">Tema: {theme==="dark"?"Escuro":"Claro"}</button>
+          <button onClick={toggleTheme} className="px-3 py-1 rounded border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800">
+            Tema: {theme==="dark"?"Escuro":"Claro"}
+          </button>
           <button onClick={()=> NextAuth.signOut({ callbackUrl: "/" })} className="px-3 py-1 rounded border">Sair</button>
         </div>
       </div>
 
-      {/* Projetos */}
+      {/* 1) PROJETO (topo) */}
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <label className="text-xs">Projeto:</label>
         <select className="px-2 py-1 rounded border dark:bg-slate-900" value={selectedProjectId} onChange={e=>{
@@ -407,54 +432,7 @@ export default function Page() {
         </div>
       )}
 
-      {/* Período / Filtros / Ordenação */}
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        <label className="text-xs">Período:</label>
-        <div className="flex items-center gap-1">
-          {useMemo(()=> {
-            // garante que o botão "Total" sempre aparece
-            const m = months.includes("ALL") ? months : ["ALL", ...months]
-            return m
-          }, [months]).map(m => (
-            <button key={m} className={`px-2 py-1 rounded border ${period===m?"bg-slate-200 dark:bg-slate-800":""}`} onClick={()=>setPeriod(m)}>
-              {m==="ALL" ? "Total" : monthLabel(m)}
-            </button>
-          ))}
-        </div>
-        <div className="h-4 w-px bg-slate-300 dark:bg-slate-700 mx-1" />
-        <label className="text-xs">Pessoa:</label>
-        <select className="px-2 py-1 rounded border dark:bg-slate-900" value={onlyPerson} onChange={e=>setOnlyPerson(e.target.value)}>
-          <option value="">Todas</option>
-          {people.map(p => <option key={p} value={p}>{p}</option>)}
-        </select>
-        <label className="text-xs">Categoria:</label>
-        <select className="px-2 py-1 rounded border dark:bg-slate-900" value={onlyCategory} onChange={e=>setOnlyCategory(e.target.value)}>
-          <option value="">Todas</option>
-          {categories.map(c => <option key={c} value={c}>{c}</option>)}
-        </select>
-        <div className="h-4 w-px bg-slate-300 dark:bg-slate-700 mx-1" />
-        <button className="px-2 py-1 rounded border" onClick={()=>setSortAsc(s => !s)}>Ordenar por data: {sortAsc?"↑":"↓"}</button>
-      </div>
-
-      {/* Lançar despesa */}
-      <div className="mt-4 grid grid-cols-1 md:grid-cols-6 gap-2">
-        <input aria-label="Data" disabled={readOnly} className="px-2 py-2 rounded border dark:bg-slate-900" type="date" value={date} onChange={e=>setDate(e.target.value)} />
-        <select aria-label="Pessoa" disabled={readOnly} className="px-2 py-2 rounded border dark:bg-slate-900" value={who} onChange={e=>setWho(e.target.value)}>
-          <option value="">Quem pagou?</option>
-          {people.map(p => <option key={p} value={p}>{p}</option>)}
-        </select>
-        <select aria-label="Categoria" disabled={readOnly} className="px-2 py-2 rounded border dark:bg-slate-900" value={category} onChange={e=>setCategory(e.target.value)}>
-          <option value="">Categoria</option>
-          {categories.map(c => <option key={c} value={c}>{c}</option>)}
-        </select>
-        <input aria-label="Descrição" disabled={readOnly} className="px-2 py-2 rounded border dark:bg-slate-900 md:col-span-2" placeholder="Descrição" value={desc} onChange={e=>setDesc(e.target.value)} onKeyDown={(e)=>{ if(e.key==="Enter"){ e.preventDefault(); addExpense() }}} />
-        <input aria-label="Valor" disabled={readOnly} className="px-2 py-2 rounded border dark:bg-slate-900" placeholder="0,00" value={amount} onChange={e=>setAmount(e.target.value)} onKeyDown={(e)=>{ if(e.key==="Enter"){ e.preventDefault(); addExpense() }}} />
-        <div className="md:col-span-6 flex justify-end">
-          <button disabled={readOnly} onClick={addExpense} className="px-3 py-2 rounded bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50">Adicionar</button>
-        </div>
-      </div>
-
-      {/* Pessoas / Categorias rápidas */}
+      {/* 2) PESSOAS - CATEGORIAS */}
       <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-2">
         <div className="rounded border dark:border-slate-700 p-2">
           <h3 className="font-semibold mb-2">Pessoas</h3>
@@ -493,40 +471,139 @@ export default function Page() {
         </div>
       </div>
 
-      {/* Lista de despesas */}
-      <div className="mt-6">
-        <h2 className="font-semibold">Despesas — {period==="ALL" ? "Total do projeto" : monthLabel(period)} — Total: {currency(total)}</h2>
-        <div className="mt-2 overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead>
-              <tr className="text-left border-b dark:border-slate-700">
-                <th className="py-2 pr-2">Data</th>
-                <th className="py-2 pr-2">Pessoa</th>
-                <th className="py-2 pr-2">Categoria</th>
-                <th className="py-2 pr-2">Descrição</th>
-                <th className="py-2 pr-2 text-right">Valor</th>
-                <th className="py-2 pr-2"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map(e => (
-                <tr key={e.id} className="border-b dark:border-slate-800">
-                  <td className="py-1 pr-2">{e.date}</td>
-                  <td className="py-1 pr-2">{e.who}</td>
-                  <td className="py-1 pr-2">{e.category}</td>
-                  <td className="py-1 pr-2">{e.desc}</td>
-                  <td className="py-1 pr-2 text-right">{currency(e.amount)}</td>
-                  <td className="py-1 pr-2 text-right">
-                    <button className="text-xs text-red-600" onClick={()=>removeExpense(e.id)}>remover</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {/* 3) ADIÇÃO DE GASTOS */}
+      <div className="mt-4 grid grid-cols-1 md:grid-cols-6 gap-2">
+        <input aria-label="Data" disabled={readOnly} className="px-2 py-2 rounded border dark:bg-slate-900" type="date" value={date} onChange={e=>setDate(e.target.value)} />
+        <select aria-label="Pessoa" disabled={readOnly} className="px-2 py-2 rounded border dark:bg-slate-900" value={who} onChange={e=>setWho(e.target.value)}>
+          <option value="">Quem pagou?</option>
+          {people.map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <select aria-label="Categoria" disabled={readOnly} className="px-2 py-2 rounded border dark:bg-slate-900" value={category} onChange={e=>setCategory(e.target.value)}>
+          <option value="">Categoria</option>
+          {categories.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <input aria-label="Descrição" disabled={readOnly} className="px-2 py-2 rounded border dark:bg-slate-900 md:col-span-2" placeholder="Descrição" value={desc} onChange={e=>setDesc(e.target.value)} onKeyDown={(e)=>{ if(e.key==="Enter"){ e.preventDefault(); addExpense() }}} />
+        <input aria-label="Valor" disabled={readOnly} className="px-2 py-2 rounded border dark:bg-slate-900" placeholder="0,00" value={amount} onChange={e=>setAmount(e.target.value)} onKeyDown={(e)=>{ if(e.key==="Enter"){ e.preventDefault(); addExpense() }}} />
+        <div className="md:col-span-6 flex justify-end">
+          <button disabled={readOnly} onClick={addExpense} className="px-3 py-2 rounded bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50">Adicionar</button>
         </div>
       </div>
 
-      {/* Resumos / “Acertos” */}
+      {/* 4) TÍTULO "DESPESAS" */}
+      <div className="mt-6">
+        <h2 className="font-semibold">Despesas</h2>
+      </div>
+
+      {/* 5) FILTROS (período, pessoa, categoria) + ORDEM */}
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <label className="text-xs">Período:</label>
+        <div className="flex items-center gap-1">
+          {months.map(m => (
+            <button key={m} className={`px-2 py-1 rounded border ${period===m?"bg-slate-200 dark:bg-slate-800":""}`} onClick={()=>setPeriod(m)}>
+              {m==="ALL" ? "Total" : monthLabel(m)}
+            </button>
+          ))}
+        </div>
+        <div className="h-4 w-px bg-slate-300 dark:bg-slate-700 mx-1" />
+        <label className="text-xs">Pessoa:</label>
+        <select className="px-2 py-1 rounded border dark:bg-slate-900" value={onlyPerson} onChange={e=>setOnlyPerson(e.target.value)}>
+          <option value="">Todas</option>
+          {people.map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <label className="text-xs">Categoria:</label>
+        <select className="px-2 py-1 rounded border dark:bg-slate-900" value={onlyCategory} onChange={e=>setOnlyCategory(e.target.value)}>
+          <option value="">Todas</option>
+          {categories.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <div className="h-4 w-px bg-slate-300 dark:bg-slate-700 mx-1" />
+        <label className="text-xs">Ordenação:</label>
+        <select className="px-2 py-1 rounded border dark:bg-slate-900" value={orderMode} onChange={e=>setOrderMode(e.target.value)}>
+          <option value="cat">Por categoria (agrupado)</option>
+          <option value="date_desc">Data ↓ (recente primeiro)</option>
+          <option value="date_asc">Data ↑ (antigo primeiro)</option>
+        </select>
+      </div>
+
+      {/* 6) GASTOS EFETIVOS (lista) */}
+      <div className="mt-3">
+        {orderMode === "cat" ? (
+          // AGRUPADO POR CATEGORIA
+          <div className="space-y-4">
+            {groupedByCategory.map(([catName, arr]) => (
+              <div key={catName} className="rounded border dark:border-slate-700">
+                <div className="px-3 py-2 font-semibold bg-slate-50 dark:bg-slate-900/50 border-b dark:border-slate-700">
+                  {catName} — {currency(arr.reduce((s, e)=>s+(e.amount||0), 0))}
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm">
+                    <thead>
+                      <tr className="text-left border-b dark:border-slate-700">
+                        <th className="py-2 pr-2">Data</th>
+                        <th className="py-2 pr-2">Pessoa</th>
+                        <th className="py-2 pr-2">Descrição</th>
+                        <th className="py-2 pr-2 text-right">Valor</th>
+                        <th className="py-2 pr-2"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {arr.map(e => (
+                        <tr key={e.id} className="border-b dark:border-slate-800">
+                          <td className="py-1 pr-2">{e.date}</td>
+                          <td className="py-1 pr-2">{e.who}</td>
+                          <td className="py-1 pr-2">{e.desc}</td>
+                          <td className="py-1 pr-2 text-right">{currency(e.amount)}</td>
+                          <td className="py-1 pr-2 text-right">
+                            <button className="text-xs text-red-600" onClick={()=>removeExpense(e.id)}>remover</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ))}
+            {groupedByCategory.length === 0 && (
+              <div className="text-xs opacity-70">Sem despesas no filtro atual.</div>
+            )}
+          </div>
+        ) : (
+          // LISTA PLANA POR DATA
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="text-left border-b dark:border-slate-700">
+                  <th className="py-2 pr-2">Data</th>
+                  <th className="py-2 pr-2">Pessoa</th>
+                  <th className="py-2 pr-2">Categoria</th>
+                  <th className="py-2 pr-2">Descrição</th>
+                  <th className="py-2 pr-2 text-right">Valor</th>
+                  <th className="py-2 pr-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {(orderMode==="date_desc" ? filteredDateDesc : filteredDateAsc).map(e => (
+                  <tr key={e.id} className="border-b dark:border-slate-800">
+                    <td className="py-1 pr-2">{e.date}</td>
+                    <td className="py-1 pr-2">{e.who}</td>
+                    <td className="py-1 pr-2">{e.category}</td>
+                    <td className="py-1 pr-2">{e.desc}</td>
+                    <td className="py-1 pr-2 text-right">{currency(e.amount)}</td>
+                    <td className="py-1 pr-2 text-right">
+                      <button className="text-xs text-red-600" onClick={()=>removeExpense(e.id)}>remover</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {filtered.length === 0 && (
+              <div className="text-xs opacity-70 mt-2">Sem despesas no filtro atual.</div>
+            )}
+          </div>
+        )}
+        <div className="mt-2 text-sm font-medium">Total do período: {currency(total)}</div>
+      </div>
+
+      {/* 7) RESUMOS — Quem pagou quanto / Totais por categoria / Acertos */}
       <div className="mt-6 grid md:grid-cols-3 gap-3">
         <div className="rounded border dark:border-slate-700 p-3">
           <h3 className="font-semibold mb-2">Quem pagou quanto</h3>
@@ -554,7 +631,7 @@ export default function Page() {
         </div>
       </div>
 
-      {/* Gráficos */}
+      {/* 8) GRÁFICO */}
       <div className="mt-8">
         <div className="flex items-center justify-between">
           <h3 className="font-semibold">Gráficos</h3>
