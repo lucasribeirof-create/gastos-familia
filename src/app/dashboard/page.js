@@ -2,7 +2,7 @@
 
 export const dynamic = "force-dynamic"
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import * as NextAuth from "next-auth/react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { carregarFamilia, salvarFamilia } from "../actions"
@@ -31,7 +31,17 @@ class ChartsErrorBoundary extends React.Component {
   render(){ return this.state.hasError ? <div className="h-72 grid place-items-center text-sm text-red-600">Erro nos gráficos.</div> : this.props.children }
 }
 
+// Página exportada: apenas o Suspense
 export default function Page() {
+  return (
+    <Suspense fallback={<div className="p-6">Carregando…</div>}>
+      <Dashboard />
+    </Suspense>
+  )
+}
+
+// Tudo que usa useSearchParams fica aqui dentro
+function Dashboard() {
   // ------ NUNCA destruture useSession diretamente ------
   const useS = NextAuth?.useSession
   const sess = typeof useS === "function" ? useS() : { data: null, status: "unauthenticated" }
